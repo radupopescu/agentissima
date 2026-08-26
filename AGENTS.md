@@ -1,6 +1,6 @@
 # local-llm-benchmark
 
-An agent benchmark for local LLMs on an Apple M1 Pro (16 GB), run through LM Studio.
+An agent benchmark for local LLMs on Apple silicon, run through LM Studio.
 
 This repository is a measuring instrument. Changes that would be ordinary improvements
 elsewhere can silently invalidate the benchmark here, so read the way of working before
@@ -28,4 +28,5 @@ project.
 - British English in prose, comments and docstrings. The fixtures' American spelling is
   deliberate test data.
 - Python 3.14, `uv`. Run everything through `.venv/bin/python`.
+- One model fits in memory at a time: load once per stage, unload at the end (§9.0).
 - Do not commit or stage. The maintainer handles version control.

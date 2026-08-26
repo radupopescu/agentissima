@@ -37,6 +37,7 @@ class Graded:
     termination_reason: str
     wall_clock_s: float
     answer: str
+    metrics: dict | None = None
 
 
 @contextmanager
@@ -99,4 +100,5 @@ def run_task(task: Task, driver: Driver) -> Graded:
         termination_reason=outcome.termination_reason,
         wall_clock_s=round(elapsed, 3),
         answer=outcome.answer,
+        metrics=outcome.metrics,
     )

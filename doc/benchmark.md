@@ -1,4 +1,4 @@
-# Local LLM Agent Benchmark — M1 Pro 16 GB
+# Local LLM Agent Benchmark
 
 **Task set version:** `v1`. See §11 for what invalidates results.
 
@@ -14,8 +14,8 @@ It does **not** track build progress. For what is implemented and what remains, 
 
 ## §1 Objective and scope
 
-Benchmark LFM2.5-2.6B and Ternary-Bonsai-8B on an Apple M1 Pro with 16 GB unified memory,
-using LM Studio as the common inference interface, and answer three separable questions:
+Benchmark LFM2.5-2.6B and Ternary-Bonsai-8B on Apple silicon, using LM Studio as the common
+inference interface, and answer three separable questions:
 
 1. **Runtime** — MLX or llama.cpp/Metal, comparing equivalent model configurations.
 2. **Model** — LFM2.5-2.6B or Ternary-Bonsai-8B, measured by agent task success rather than
@@ -90,11 +90,17 @@ The factor 2 covers keys and values.
 A `(configuration, context)` pair is **admissible** when:
 
 ```
-on_disk_bytes + kv_bytes + 2 GiB headroom ≤ 16 GiB
+on_disk_bytes + kv_bytes + 2 GiB headroom ≤ total_unified_memory
 ```
 
+`total_unified_memory` is read from the machine at setup (`sysctl hw.memsize`) and recorded in
+`environment.json`. It is never hardcoded: the protocol is machine-independent, but any given
+**result set is not**. Admissibility, peak memory and swap behaviour all depend on the host, so
+results from machines with different memory are not comparable and must not be pooled.
+
 Inadmissible pairs are skipped and recorded as `oversized`. The 2 GiB headroom covers the
-runtime, activations and macOS working set. It is a deliberate margin, not a measurement.
+runtime, activations and OS working set. It is a deliberate margin, not a measurement, and
+§9 records whether it held once real peak-memory figures exist.
 
 ---
 
@@ -103,6 +109,9 @@ runtime, activations and macOS working set. It is a deliberate margin, not a mea
 `results/<session>/environment.json` is written at session start:
 
 ```
+machine_model          sysctl hw.model
+chip                   sysctl machdep.cpu.brand_string
+total_memory_bytes     sysctl hw.memsize
 macos_build            sw_vers -buildVersion
 lmstudio_version       LM Studio app version
 backend_runtime        runtime name + version (MLX or llama.cpp build)
@@ -312,6 +321,13 @@ The run ends on whichever occurs first:
 | 3 consecutive identical tool calls (same name and arguments) | `loop_detected` |
 | 5 consecutive invalid tool calls | `malformed_calls` |
 
+**Precedence.** Conditions are evaluated in the order they occur, so the earliest trigger wins.
+Repeating one malformed call therefore reports `loop_detected` at the third call, not
+`malformed_calls` at the fifth: three identical calls is stuck behaviour whatever their
+validity. `malformed_calls` consequently means *varying* invalid calls — the model cannot
+format arguments — which is a different finding from being stuck, and the two are worth
+distinguishing in failure analysis.
+
 ---
 
 ## §5 Metric definitions
@@ -323,7 +339,7 @@ Each term is defined against a specific observable so two independent implementa
 | Term | Definition |
 |---|---|
 | `t_request` | Monotonic clock immediately before the request body is written to the socket. |
-| `t_first` | Timestamp of the first SSE chunk carrying non-empty `delta.content` **or** any `delta.tool_calls`. Role-only chunks are explicitly excluded. |
+| `t_first` | Timestamp of the first SSE chunk carrying a generated token: non-empty `delta.content`, non-empty `delta.reasoning_content`, **or** any `delta.tool_calls`. Role-only chunks are explicitly excluded. |
 | `t_last` | Timestamp of the chunk carrying `finish_reason`. |
 | **TTFT** | `t_first − t_request` |
 | **Generation tok/s** | `(completion_tokens − 1) / (t_last − t_first)` |
@@ -332,8 +348,21 @@ Each term is defined against a specific observable so two independent implementa
 Generation throughput subtracts one token because the first token had already arrived at
 `t_first` and did not occur within the generation window.
 
-`overhead_median` is measured once per session: 20 requests with a minimal prompt and
-`max_tokens=1`, taking the median TTFT. It absorbs HTTP, serialisation and scheduler overhead.
+`overhead_median` is measured once per session: 20 requests with a minimal prompt and a small
+generation limit (`max_tokens=8`), taking the median TTFT. The limit is not 1 because LM Studio
+can finish on the limit without emitting a token delta, leaving nothing to time; TTFT is time to
+the *first* token, so the limit does not affect the measurement provided tokens stream at all. It absorbs HTTP, serialisation and scheduler overhead.
+Calibration that yields no timed sample **fails loudly** rather than defaulting to zero, which
+would silently leave prompt tok/s unadjusted.
+
+> **Reasoning tokens count as tokens.** Some models emit `reasoning_content` before any
+> `content`, and LM Studio reports the count in
+> `usage.completion_tokens_details.reasoning_tokens`. Excluding reasoning from `t_first` would
+> fold the whole reasoning phase into TTFT and then divide every generated token by the much
+> shorter content window, inflating generation throughput and misreporting latency. Reasoning
+> tokens are therefore included in `t_first` and in `completion_tokens`, and additionally
+> recorded on their own as `reasoning_tokens` — on a reasoning model they dominate agent
+> latency, and a configuration's reasoning ratio is a result in its own right.
 
 > **Prompt tok/s is a defined proxy**, not a claim about the runtime's internal timings. It is
 > comparable across configurations only because it is computed identically for all of them.
@@ -342,17 +371,20 @@ Generation throughput subtracts one token because the first token had already ar
 
 | Term | Definition |
 |---|---|
-| **Peak memory** | Maximum `phys_footprint` from `footprint -p <pid>` for the LM Studio inference process, sampled every 250 ms for the duration of the run. |
+| **Peak memory** | Maximum `phys_footprint` from `footprint -p <pid>` for the LM Studio inference process, sampled every 250 ms for the duration of the run. Candidate processes are ranked by footprint, never by RSS: on unified memory a backend's RSS badly understates what it holds, and ranking by RSS selects the UI process instead. |
 | **Swap delta** | `sysctl vm.swapusage` used-bytes at run end minus at run start. |
 
 The inference process name is **discovered at setup**, never hardcoded — LM Studio runs
-backends as separate child processes and the name differs between MLX and llama.cpp.
+backends as separate child processes and the name differs between MLX and llama.cpp. Discovery
+refuses to return a process too small to plausibly hold a model, because sampling the wrong
+process silently is worse than reporting no figure at all.
 
 `sudo` is not required. `sudo powermetrics` may be used for supplementary investigation but is
 never part of the protocol.
 
-**A non-zero swap delta flags the run.** On 16 GB, swapping — not token throughput — is the
-likely performance cliff. A flagged run's timing metrics are reported but excluded from medians.
+**A non-zero swap delta flags the run.** On a memory-constrained machine, swapping — not token
+throughput — is the likely performance cliff. A flagged run's timing metrics are reported but
+excluded from medians.
 
 ### 5.3 Metric availability is per driver
 
@@ -498,7 +530,7 @@ Exact prompt text lives in `harness/tasks/workspace.py` and `harness/tasks/repo.
 
 | ID | Category | Task | Pass assertion |
 |---|---|---|---|
-| W01 | retrieval | The international per-diem cap, and which file states it | contains the authoritative cap **and** not the superseded figure |
+| W01 | retrieval | The international per-diem cap, and which file states it | contains the authoritative cap; the superseded figure may appear only if named as superseded |
 | W02 | aggregation | Total Travel expenses for 1 Jan – 31 Mar 2026 in the reporting currency | numeric answer equals the expected total exactly |
 | W03 | extraction | Write `data/summary.csv` with `team,fte_total` per team | file parses; header matches; row set equals expected exactly |
 | W04 | tool-recovery | Row count of `data/expense.csv` — the prompt's path is wrong | correct count **and** ≤3 path errors |
@@ -572,6 +604,17 @@ required, and never mixed into the results tables.
 ## §9 Execution stages and gates
 
 Stages 0–4 use the `native` driver exclusively.
+
+### 9.0 Model lifecycle
+
+Unified memory holds one model at a time. A stage therefore **loads its model once at the
+start and unloads it once at the end**, via the `lms` CLI — never per run, which would let load
+time dominate wall clock and distort every §5 timing.
+
+Anything already resident is unloaded first, so a stage never runs against a model it did not
+choose, and the unload always happens on the way out, including on failure, so an aborted stage
+does not strand a model in memory. Context length is set at load time (`lms load -c`), which is
+why context is a property of the stage rather than of an individual request.
 
 ### Stage 0 — tool-calling gate
 
@@ -719,6 +762,11 @@ driver + version       sampling parameters   both task sets
 
 **Models are not tuned independently during the primary benchmark.** Optimisation happens
 afterwards, in Stage 5B, as a separate best-practical-configuration experiment.
+
+**Results are comparable only within one machine.** The protocol is machine-independent, but
+admissibility (§2.2), peak memory and swap behaviour are not. `machine_model`, `chip` and
+`total_memory_bytes` are recorded per session precisely so that pooling across hosts is
+detectable, and it is never done.
 
 Any change to the following bumps `task_set_version` and **invalidates comparison with earlier
 results**:

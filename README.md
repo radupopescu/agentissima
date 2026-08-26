@@ -1,6 +1,6 @@
 # local-llm-benchmark
 
-An agent benchmark for local LLMs on an Apple M1 Pro (16 GB), run through LM Studio.
+An agent benchmark for local LLMs on Apple silicon, run through LM Studio.
 
 It answers three separable questions — MLX or llama.cpp/Metal, LFM2.5-2.6B or
 Ternary-Bonsai-8B, and which quantisation gives the best quality/latency/memory trade-off —
@@ -83,11 +83,28 @@ These guard the properties the benchmark's validity rests on: tool calls are nev
 
 ---
 
+### Smoke-check against a real model
+
+Requires LM Studio running. Loads a model, runs one task through the `native` driver, unloads.
+
+```sh
+.venv/bin/python -m harness.smoke                      # lfm2.5-2.6b-mlx, task W01
+.venv/bin/python -m harness.smoke lfm2.5-2.6b@q8_0 W05
+```
+
+Not a benchmark stage — a sanity check after touching the client, the loop or the metrics.
+`peak_memory` should be large enough to plausibly hold the model, and `final_finish_reason`
+should be `stop` rather than `length`.
+
+---
+
 ## What is not built yet
 
-The LM Studio client and the `native` agent loop (§4.2), the metrics layer (§5), the
-configuration probes and environment capture (§2.1, §3), the stage runners and results output
-(§9, §10), and the `pi` driver (§4.1).
+The configuration probes and environment capture (§2.1, §3), the Stage 0 tasks, the stage
+runners and results output (§9, §10), reporting, and the `pi` driver (§4.1).
+
+The LM Studio client, the `native` agent loop and the metrics layer are built and verified
+end-to-end against a real model, but nothing yet orchestrates them into a stage.
 
 Consequently **no benchmark stage can be run yet.** See
 [`doc/implementation-plan.md`](doc/implementation-plan.md) for the ordered milestones and the
@@ -146,5 +163,10 @@ harness/
   runner.py               fixture preparation and grading
   oracle.py               oracle, negative control, adversarial control
   gates.py                runs the §8 gates
+  client.py               LM Studio streaming + §5.1 chunk timings
+  driver_native.py        the agent loop and its termination rules
+  metrics.py              timing, memory sampler, swap window
+  lmstudio.py             model load/unload via the `lms` CLI
+  smoke.py                one-task end-to-end check against a real model
 tests/                    tests for the harness itself
 ```

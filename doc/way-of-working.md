@@ -119,9 +119,12 @@ never enters a benchmark run.
 
 ## State of the build
 
-Built and verified: fixtures, sandbox, tools, both task suites, scoring, grading, and the §8
-gates.
+Built and verified without a model: fixtures, sandbox, tools, both task suites, scoring,
+grading, the §8 gates, the LM Studio client, the `native` agent loop, the metrics layer and
+model lifecycle control.
 
-Not built: the LM Studio client and the `native` agent loop, the metrics layer, the
-configuration probes, the stage runners, reporting, and the `pi` driver. No benchmark stage can
-be run yet. See [`implementation-plan.md`](implementation-plan.md).
+One task has run end-to-end against a real model; `python -m harness.smoke` repeats it.
+
+Not built: the configuration probes, environment capture, the Stage 0 tasks, the stage runners,
+reporting, and the `pi` driver. No benchmark stage can be run yet. See
+[`implementation-plan.md`](implementation-plan.md).

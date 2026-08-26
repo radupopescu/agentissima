@@ -69,6 +69,9 @@ class RunOutcome:
     termination_reason: str = "final_answer"
     steps: int = 0
     path_errors: int = 0
+    # Populated by `native`; left None by drivers that cannot produce §5
+    # metrics. A null is never replaced by an estimate (§5.3).
+    metrics: dict | None = None
 
     @property
     def invalid_calls(self) -> int:

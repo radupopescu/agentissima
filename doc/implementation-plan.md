@@ -20,20 +20,36 @@ this file.
 | Task suites | `harness/tasks/workspace.py`, `repo.py`, `__init__.py` | 20 tasks with programmatic assertions |
 | Grading and scoring | `harness/runner.py`, `harness/scoring.py`, `harness/assertions.py` | Working |
 | Validation gates | `harness/oracle.py`, `harness/gates.py` | Oracle 20/20, both controls 0/20 |
-| System prompt | `harness/prompt.py` | Defined and hashed; **not yet wired to any driver** |
+| System prompt | `harness/prompt.py` | Defined and hashed; wired into the `native` driver |
+| LM Studio client | `harness/client.py` | Streaming + §5.1 chunk timings; 9 tests |
+| `native` agent loop | `harness/driver_native.py` | All five §4.8 termination paths tested |
+| Metrics | `harness/metrics.py` | §5.1 timing, memory sampler, swap window, process discovery |
+| Model lifecycle | `harness/lmstudio.py` | `lms` load/unload/ps, stage-scoped context manager |
 
-Everything above runs with no model and no network:
+The harness half runs with no model and no network (43 tests):
 
 ```sh
 .venv/bin/python -m harness.gates
 .venv/bin/python -m pytest -q
 ```
 
+**Verified end-to-end** against `lfm2.5-2.6b-mlx` at 8K: W01 passes, 5 valid tool calls,
+0 invalid, TTFT 1.0 s, 31 gen tok/s, 912 prompt tok/s, 6.5 GiB peak. Re-check with
+`python -m harness.smoke [model-key] [task-id]` after touching the client, loop or metrics.
+
+Four defects that only a real model exposed, now fixed and covered by tests:
+
+| Defect | Fix |
+|---|---|
+| LFM2.5 emits `reasoning_content` before any `content`; 60 % of its generated tokens were reasoning. TTFT measured from first *content* folded the whole reasoning phase into prefill and inflated gen tok/s | `t_first` counts reasoning; `reasoning_tokens` recorded separately (§5.1) |
+| Process discovery matched the Electron renderer (0.5 GiB) instead of the backend (6.5 GiB) | Hints target `.lmstudio/.internal`; candidates ranked by footprint, not RSS; refuses a process too small to hold a model (§5.2) |
+| `max_tokens=1` made LM Studio finish without emitting a token delta, so overhead calibration silently returned 0.0 and prompt tok/s went unadjusted | `max_tokens=8`; no timed sample now fails loudly (§5.1) |
+| W01 failed a *correct* answer that named £85 and identified £72 as superseded | The decoy may appear if marked superseded (§7.1) |
+
 ### Not built
 
-The entire model-facing half: the LM Studio client, the `native` agent loop, all metrics, the
-configuration probes, environment capture, the stage runners, results output, reporting, and
-the `pi` driver.
+The configuration probes, environment capture, the Stage 0 tasks, the stage runners, results
+output, reporting, and the `pi` driver.
 
 ---
 
@@ -64,9 +80,8 @@ prompt_sha256(extra_rules: str | None) -> str
 runs the driver, and grades. A new driver is a drop-in: implement the `Driver` signature and
 `gates.py`-style harnessing comes free.
 
-**One change is required:** `RunOutcome` needs a `metrics: dict | None = None` field, populated
-by `native` and left `None` by the oracle and stub drivers. `Graded` then carries it through to
-the JSONL writer. This is the only planned change to an existing interface.
+`RunOutcome` and `Graded` both carry `metrics: dict | None`, populated by `native` and left
+`None` by the oracle and stub drivers (§5.3). M4 only has to write it out.
 
 ---
 
@@ -78,11 +93,11 @@ These gate everything in §4 and are not automatable from here.
    exists — some quantisations may not be published, in which case the configuration is dropped
    and the specification's §2 table is amended, not fudged.
 2. **LM Studio server running** on `localhost:1234` with exactly one model loaded (§3.1).
-3. **Decide how models are loaded and unloaded.** Switching six configurations by hand across
-   ~400 runs is not viable. LM Studio ships an `lms` CLI with `lms load` / `lms unload`;
-   confirm it is installed and whether it can set context length per load. If it can, the stage
-   runner drives it. If not, stages must be run one configuration at a time with a manual
-   load step, and the runner must assert which model is loaded before starting.
+3. ~~Decide how models are loaded and unloaded.~~ **Resolved.** `lms` is installed and
+   supports `lms load -c <context>`, `--identifier`, `--estimate-only` and `lms unload --all`,
+   with `lms ps --json` for what is resident. `harness/lmstudio.py` wraps it; a stage loads once
+   and unloads once (§9.0). Note `/v1/models` lists everything *downloaded*, not what is
+   loaded — only `lms ps` answers that.
 
 ---
 
@@ -90,7 +105,7 @@ These gate everything in §4 and are not automatable from here.
 
 Ordered. Each is independently verifiable.
 
-### M1 — LM Studio client and the `native` driver (§4.2, §4.4, §4.5, §4.8)
+### ~~M1 — LM Studio client and the `native` driver~~ — done and verified
 
 **New files:** `harness/client.py`, `harness/driver_native.py`
 
@@ -131,7 +146,7 @@ invalid).
 termination reason in a unit test, and one real task completes end-to-end against a loaded
 model.
 
-### M2 — Metrics (§5)
+### ~~M2 — Metrics~~ — done and verified
 
 **New file:** `harness/metrics.py`
 
@@ -236,7 +251,8 @@ Not blockers, but each needs an answer recorded in `benchmark.md` when resolved.
 
 | Question | Why it matters |
 |---|---|
-| Does LM Studio honour `seed`, `top_k` and `repeat_penalty` on both backends? | §4.2 claims a fixed sampling block. If a parameter is ignored, that must be recorded, not assumed |
+| Does LM Studio honour `seed`, `top_k` and `repeat_penalty` on both backends? | §4.2 claims a fixed sampling block. **Still open.** `extra_body` is accepted without error, but that only proves it is not rejected. A first attempt to test `seed` was invalid: at `max_tokens=40` every token went to reasoning, so both samples were empty strings and compared equal. Retest with enough tokens for content to appear |
+| Is the reasoning ratio stable across configurations? | LFM2.5 spent 269 of 451 completion tokens on reasoning. If that varies by model it is a headline result, not a footnote — it drives agent latency far more than raw tok/s |
 | How is model load time measured? | Listed as a Stage 1 metric but never defined in §5.1 |
 | Can `lms` set context length at load time? | Determines whether stages can run unattended across configurations |
 | Do all six quantisations actually exist? | §2's table may need amending on the evidence |
@@ -252,7 +268,8 @@ Not blockers, but each needs an answer recorded in `benchmark.md` when resolved.
 - **Truncation dominating failures.** §4.7 explains why several Suite W tasks require
   `run_command`. If failure analysis shows models never recognising the truncation marker, that
   is a legitimate finding; do not raise the limit mid-benchmark.
-- **Swapping on 16 GB.** The likely cliff, especially at 32K+ with BF16. `swap_flag` exists so
+- **Swapping.** The likely cliff on a memory-constrained machine, especially at 32K+ with
+  BF16. `swap_flag` exists so
   this shows up as a flag rather than as mysteriously poor throughput.
 - **Wall clock.** Stage 2A alone is 6–12 hours. Build the resume capability in M4 before
   starting a long stage, not after losing one to an interruption.

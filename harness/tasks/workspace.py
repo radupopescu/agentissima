@@ -27,6 +27,16 @@ inside the working directory:
 MD_PATH = r"[\w./-]+\.md"
 EXPENSE_ID = r"EXP-\d{4}"
 
+# W01: quoting the superseded figure is only acceptable if the answer identifies
+# it as superseded. A model that names the authoritative cap *and* explains the
+# decoy has done the task better than one that ignores the decoy, and must not
+# be failed for thoroughness.
+SUPERSEDED_MARKER = re.compile(
+    r"supersed|former|previous|outdated|historical|no longer|"
+    r"old(?:er)?\s+(?:policy|version|figure|cap)",
+    re.IGNORECASE,
+)
+
 
 def _has_any_number(ctx: Ctx) -> bool:
     return bool(re.search(r"\d", ctx.answer))
@@ -36,9 +46,12 @@ def _has_any_number(ctx: Ctx) -> bool:
 
 
 def _check_w01(ctx: Ctx) -> bool:
-    return contains_number(ctx.answer, ctx.expected["cap"]) and not contains_number(
-        ctx.answer, ctx.expected["decoy"]
-    )
+    if not contains_number(ctx.answer, ctx.expected["cap"]):
+        return False
+    if not contains_number(ctx.answer, ctx.expected["decoy"]):
+        return True
+    # The decoy figure appears: acceptable only if named as superseded.
+    return bool(SUPERSEDED_MARKER.search(ctx.answer))
 
 
 # --- W02 aggregation --------------------------------------------------------
