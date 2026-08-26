@@ -1,6 +1,6 @@
 """Generate the non-coding fixture (`workspace/`) and its expected values.
 
-Per benchmark.md §6, the generator emits both the fixture and
+Per doc/benchmark.md §6, the generator emits both the fixture and
 `fixtures/expected/W*.json`, so a fixture and its assertions cannot drift apart.
 
 Determinism: every value derives from a fixed seed. Re-running reproduces the

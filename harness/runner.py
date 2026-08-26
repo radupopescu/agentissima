@@ -1,6 +1,6 @@
 """Fixture preparation and grading.
 
-A driver is any callable ``(task, sandbox) -> RunOutcome`` (benchmark.md §4.1).
+A driver is any callable ``(task, sandbox) -> RunOutcome`` (doc/benchmark.md §4.1).
 Grading is identical for every driver: it inspects final fixture state and the
 final answer, never the transcript's internal structure.
 """

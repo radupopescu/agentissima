@@ -2,8 +2,23 @@
 
 An agent benchmark for local LLMs on an Apple M1 Pro (16 GB), run through LM Studio.
 
-[`benchmark.md`](benchmark.md) is the specification and the authoritative description of the
-protocol. This README covers only how to run what exists.
+It answers three separable questions — MLX or llama.cpp/Metal, LFM2.5-2.6B or
+Ternary-Bonsai-8B, and which quantisation gives the best quality/latency/memory trade-off —
+by measuring agent task success rather than token throughput alone.
+
+| Document | Purpose |
+|---|---|
+| [`doc/benchmark.md`](doc/benchmark.md) | The specification. Authoritative on what is measured and how |
+| [`doc/way-of-working.md`](doc/way-of-working.md) | Methodology and invariants for developing the project |
+| [`doc/implementation-plan.md`](doc/implementation-plan.md) | Remaining work, in pickup-ready detail |
+
+---
+
+## Requirements
+
+- macOS on Apple silicon
+- Python 3.14 and [`uv`](https://docs.astral.sh/uv/)
+- LM Studio, for the model-facing stages only
 
 ## Setup
 
@@ -12,45 +27,109 @@ uv venv --python 3.14
 uv pip install pyyaml openai pytest
 ```
 
-## Generate the fixtures
+Run everything through `.venv/bin/python`. The sandbox puts `.venv/bin` on `PATH` for
+commands it executes, so `pytest` and `python` resolve inside sandboxed runs.
 
-Both generators emit the fixture **and** the expected values the assertions read, so a fixture
-and its assertions cannot drift apart (§6).
+---
+
+## What you can run today
+
+The whole measurement apparatus except the part that talks to a model. No LM Studio, no
+network, no model downloads required.
+
+### Generate the fixtures
 
 ```sh
 .venv/bin/python fixtures/build_workspace.py    # workspace/ + expected/W*.json
 .venv/bin/python fixtures/build_testrepo.py     # testrepo/  + expected/T*.json
 ```
 
-Regenerating a fixture bumps `task_set_version` and invalidates comparison with earlier
-results (§11).
+Both are seeded and reproduce byte-for-byte. They are committed deliberately: results are only
+comparable against a known fixture revision. **Regenerating a fixture bumps
+`task_set_version`** and invalidates comparison with earlier results — see §11.
 
-## Run the validation gates
+Each generator emits the fixture *and* the expected values the assertions read, so the two
+cannot drift apart.
 
-Blocking preconditions from §8. No model is benchmarked until all pass.
+### Run the validation gates
 
 ```sh
 .venv/bin/python -m harness.gates
 ```
 
-- **oracle** must score 20/20 — proves every task is solvable through the tool surface
-- **negative control** must score 0/20 — proves no assertion passes trivially
-- **adversarial control** must score 0/20 — proves the planted decoys discriminate
-- **driver parity** — pending, requires the `pi` driver
+These are blocking preconditions (§8). No model is benchmarked until all pass.
 
-## Run the harness's own tests
+| Gate | Requirement | Rules out |
+|---|---|---|
+| oracle | 20/20 | Unsolvable tasks, unreachable information, broken assertions |
+| negative control | 0/20 | Assertions that pass trivially |
+| adversarial control | 0/20 | Decoys that do not actually discriminate |
+| driver parity | pending | Needs the `pi` driver |
+
+The oracle reaches every answer *through the same five tools an agent would use* — it never
+reads the expected values. That is what makes 20/20 mean the information is genuinely
+reachable, rather than merely present on disk.
+
+If the oracle fails a task, the task or its assertion is wrong, not the model.
+
+### Run the harness's own tests
 
 ```sh
 .venv/bin/python -m pytest -q
 ```
 
-These guard the contracts the benchmark's validity rests on: tool calls are never repaired
+These guard the properties the benchmark's validity rests on: tool calls are never repaired
 (§4.5), output truncation is exact, and the sandbox cannot be escaped (§4.6).
+
+---
+
+## What is not built yet
+
+The LM Studio client and the `native` agent loop (§4.2), the metrics layer (§5), the
+configuration probes and environment capture (§2.1, §3), the stage runners and results output
+(§9, §10), and the `pi` driver (§4.1).
+
+Consequently **no benchmark stage can be run yet.** See
+[`doc/implementation-plan.md`](doc/implementation-plan.md) for the ordered milestones and the
+interfaces new code must fit.
+
+---
+
+## Running the benchmark, once built
+
+Recorded here so the intended workflow is clear. None of this works today.
+
+```sh
+# One-off, per machine
+.venv/bin/python -m setup.probe_process              # discover the inference process name
+.venv/bin/python -m setup.probe_config  --config LFM-M8
+
+# Per configuration
+.venv/bin/python -m harness.stages stage0  --config LFM-M8
+.venv/bin/python -m harness.stages stage1  --config LFM-M8 --context 8192 16384
+.venv/bin/python -m harness.stages stage2a --config LFM-M8 --context 8192
+.venv/bin/python -m harness.stages stage2b --config LFM-M8 --context 8192
+
+# Reporting, regenerated from JSONL only
+.venv/bin/python -m harness.report results/<session>/
+```
+
+Before any of it: LM Studio serving on `localhost:1234` with exactly one model loaded, on AC
+power, Low Power Mode off. The harness asserts these and aborts rather than warning (§3.1).
+
+Stage 0 is the cheap gate — three trivial tool calls per configuration. A configuration that
+cannot emit a valid tool call is excluded from the agent stages there, before it consumes the
+6–12 hours that Stage 2A takes.
+
+---
 
 ## Layout
 
 ```
-benchmark.md              the specification
+doc/
+  benchmark.md            the specification
+  way-of-working.md       methodology and invariants
+  implementation-plan.md  remaining work
 fixtures/
   build_workspace.py      generator for the non-coding fixture
   build_testrepo.py       generator for the coding fixture
@@ -69,8 +148,3 @@ harness/
   gates.py                runs the §8 gates
 tests/                    tests for the harness itself
 ```
-
-## Not yet built
-
-The LM Studio client and the `native` agent loop (§4.2), the metrics layer (§5), the
-configuration probes (§2.1), and the stage runners (§9).

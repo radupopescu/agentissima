@@ -1,4 +1,4 @@
-"""Tool schemas and strict dispatch, per benchmark.md §4.4 and §4.5.
+"""Tool schemas and strict dispatch, per doc/benchmark.md §4.4 and §4.5.
 
 Dispatch never repairs. Unparseable arguments, unknown tool names, missing
 required arguments and wrongly typed arguments are each counted as an invalid

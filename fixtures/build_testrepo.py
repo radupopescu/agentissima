@@ -1,6 +1,6 @@
 """Generate the coding fixture (`testrepo/`) and its expected values.
 
-Per benchmark.md §6 the generator emits both the fixture and
+Per doc/benchmark.md §6 the generator emits both the fixture and
 `fixtures/expected/T*.json`. Expected values that describe the source (which
 modules raise ValidationError, how many test files exist) are *derived by
 scanning the generated tree*, not hand-written, so they cannot drift.

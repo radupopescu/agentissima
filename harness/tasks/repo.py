@@ -1,4 +1,4 @@
-"""Suite T — coding tasks over the `testrepo/` fixture (benchmark.md §7.2).
+"""Suite T — coding tasks over the `testrepo/` fixture (doc/benchmark.md §7.2).
 
 The T09 fixture variant adds `tests/test_close.py`, which is deliberately absent
 from the base tree so that T03's "the whole suite passes" assertion is exact.

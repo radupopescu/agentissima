@@ -1,4 +1,4 @@
-"""Tests for the harness contracts in benchmark.md §4.4-§4.6.
+"""Tests for the harness contracts in doc/benchmark.md §4.4-§4.6.
 
 These guard the properties the benchmark's validity rests on: that tool calls
 are never repaired, that output truncation is exact, and that the sandbox

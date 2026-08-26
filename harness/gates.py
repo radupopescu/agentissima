@@ -1,4 +1,4 @@
-"""Run the validation gates from benchmark.md §8.
+"""Run the validation gates from doc/benchmark.md §8.
 
     python -m harness.gates
 

@@ -1,4 +1,4 @@
-"""Suite W — non-coding tasks over the `workspace/` fixture (benchmark.md §7.1).
+"""Suite W — non-coding tasks over the `workspace/` fixture (doc/benchmark.md §7.1).
 
 Prompts are fixed text. Expected values come from `fixtures/expected/W*.json`,
 emitted by the fixture generator, never hand-copied.

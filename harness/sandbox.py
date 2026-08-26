@@ -1,4 +1,4 @@
-"""The tool sandbox, per benchmark.md §4.6.
+"""The tool sandbox, per doc/benchmark.md §4.6.
 
 Every tool returns a string. Errors — including path violations, missing files
 and disallowed commands — are returned as ordinary result strings so the model

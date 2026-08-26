@@ -1,4 +1,4 @@
-"""The scripted oracle and the negative control, per benchmark.md §8.
+"""The scripted oracle and the negative control, per doc/benchmark.md §8.
 
 The oracle is not allowed to shortcut: it reaches every answer through the same
 five tools an agent would use, so passing 20/20 proves the information is

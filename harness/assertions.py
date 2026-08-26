@@ -1,7 +1,7 @@
 """Assertion helpers shared by both task suites.
 
 Every helper works on final fixture state or final answer text, keeping the
-assertions driver-independent (benchmark.md §4.1).
+assertions driver-independent (doc/benchmark.md §4.1).
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""The fixed system prompt, per benchmark.md §4.3.
+"""The fixed system prompt, per doc/benchmark.md §4.3.
 
 One block, identical for every model, configuration and suite. No per-model
 adaptation is permitted. Two tasks append a fixed `extra_rules` block.
