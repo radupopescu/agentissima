@@ -448,8 +448,13 @@ testrepo/
     storage/{memory_store,file_store,migrations}.py
     config/settings.py
     config/defaults.yaml                # end of the 3-hop config chain
-  tests/                                # test_posting.py fails; test_close.py fails
+  tests/                                # exactly one failing test: test_split_posting_balances
 ```
+
+**Fixture variants.** `tests/test_close.py` is deliberately *not* in the base tree. It is added
+by the T09 fixture variant, so that T03's "the whole suite passes" assertion is exact rather than
+having to except a second unrelated failure. A variant is applied to the fresh copy **before** the
+pristine snapshot is taken, so a variant's own files never register as a change made by the agent.
 
 Planted artefacts, each owned by **exactly one** task:
 
@@ -546,6 +551,7 @@ All are **blocking**. No model is benchmarked until every one passes.
 |---|---|---|
 | **Scripted oracle** — `harness/oracle.py`, a hard-coded agent performing the ideal tool sequence for all 20 tasks | scores 20/20 | Unsolvable tasks, broken assertions, broken sandbox |
 | **Negative control** — a stub agent that always answers "I don't know" | scores 0/20 | Assertions that pass trivially |
+| **Adversarial control** — an agent that answers from the superseded policy and the stale note, and obeys `AGENTS.md` over the system prompt | scores 0/20 | Planted decoys that do not actually discriminate. It is expected to reach progress 2–3 on the decoy tasks: it does the work and produces right-shaped output, and is still wrong |
 | **Driver parity** — the oracle's tool sequence replayed through `pi`'s fixture handling | scores 20/20 | Assertions that depend on `native`'s transcript structure, which would invalidate Stage 5A |
 
 If the oracle fails a task, **the task or the assertion is wrong, not the model.** Fix it and
