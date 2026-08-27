@@ -410,40 +410,49 @@ would silently leave prompt tok/s unadjusted.
 
 | Term | Definition |
 |---|---|
-| **Peak memory** | Maximum system-wide committed memory (`vm_stat` wired + active + compressed) during the run, sampled every 250 ms, **minus a baseline captured at session start with no model loaded**. Reported as the delta. |
+| **Peak memory** | Maximum of **Dirty + Clean** from the TOTAL row of `footprint -p <pid>` for the LM Studio inference process, sampled every 250 ms for the duration of the run. |
 | **Swap delta** | `sysctl vm.swapusage` used-bytes at run end minus at run start. |
 
-> **Why not a per-process figure.** MLX allocates its weights; llama.cpp memory-maps them
-> (`mmap+mlock`). `phys_footprint` therefore credits MLX with the model and not llama.cpp, and
-> RSS inverts the same bias rather than removing it. Measured on one machine at matched size:
+> **Why dirty + clean, and not `phys_footprint` or RSS.** The two runtimes put the weights in
+> different classes of memory, and each of the obvious metrics is blind to exactly one of them:
 >
-> | Configuration | on disk | per-process `phys_footprint` |
-> |---|---|---|
-> | MLX 8-bit | 2.88 GB | 3.55 GiB — the weights are counted |
-> | llama.cpp Q8_0 | 2.87 GB | 0.21–0.24 GiB over 3 runs — they are not |
+> | | weights land in | `phys_footprint` | RSS |
+> |---|---|---|---|
+> | llama.cpp Q8_0 (2.87 GB) | `mapped file`, **clean** | 227 MB ✗ | 2969 MB ✓ |
+> | MLX 8-bit (2.88 GB) | `IOAccelerator (graphics)`, **dirty** | 3230 MB ✓ | 707 MB ✗ |
 >
-> An order of magnitude, in the runtime comparison that is question 1 of §1. No per-process
-> metric can be made comparable across two runtimes that acquire memory by different means.
+> `phys_footprint` counts dirty pages, so it excludes the clean file-backed pages llama.cpp
+> `mmap`s the GGUF into. RSS excludes the GPU-owned Metal buffers MLX allocates. Either choice
+> biases the runtime comparison — question 1 of §1 — by roughly the size of the model.
+>
+> Summing the Dirty and Clean columns counts both: 2980 MB and 3310 MB for those two artefacts.
+> `Reclaimable` is **not** added; it is a subset of what those columns already report.
 
-**Unresolved: the delta is not yet reproducible enough to report.** Six runs of one
-configuration (llama.cpp Q8_0, W05, 8K context) gave deltas of 1.54, 1.65, 1.78, 1.80, 2.08
-and 2.82 GiB — a spread of 1.3 GiB, which is roughly half the model. The baseline itself
-drifted between 9.98 and 10.88 GiB, so the machine does not return to a common floor after an
-unload. Over the same six runs the per-process figure stayed within 0.03 GiB.
+This is an upper bound on what must stay resident, since clean file-backed pages are evictable
+under memory pressure. That is the bound §2.2 wants: how much unified memory a configuration
+needs to run without swapping.
 
-So the current definition trades a *biased but precise* measure for an *unbiased but noisy*
-one, and the noise is of the same order as the differences between configurations that §2.2
-needs to resolve. §3.1's quiet-machine precondition is load-bearing rather than advisory, and
-is on this evidence not sufficient on its own. Baseline and peak are both recorded so the
-delta stays auditable. Resolving this is a prerequisite for Stage 1 — see the open question in
-the implementation plan; do not quote peak-memory figures until it is settled.
+Sampling cost is ~50 ms, inside the 250 ms interval. `vmmap -summary` yields the same figure
+from its RESIDENT column but takes ~1 s and cannot be used at this rate.
 
-A per-process footprint is still recorded alongside, for diagnostics only. It never enters a
-comparison. The inference process name is discovered at runtime, never hardcoded — LM Studio
-runs backends as separate child processes and the name differs between MLX and llama.cpp — and
-discovery runs **after** the overhead calibration, never straight after load: llama.cpp
-allocates lazily, so a backend probed too early is not yet identifiable as the process holding
-the weights.
+> **Rejected: a system-wide `vm_stat` delta.** An earlier revision measured system-wide
+> committed memory (wired + active + compressed) against a no-model baseline, to escape the
+> per-process bias. It escaped the bias but could not be reported: six runs of one
+> configuration spanned 1.54–2.82 GiB, and the baseline itself drifted 9.98–10.88 GiB between
+> runs, because the machine does not return to a common floor after an unload. The measure
+> defined above spans 0.03 GiB over the same repetitions.
+
+The inference process is discovered at runtime, never hardcoded: LM Studio runs backends as
+separate child processes, and they are not alike. llama.cpp runs as `llama-server`; the MLX
+backend runs as a generic `node` process under `~/.lmstudio/.internal`, distinguishable by
+path rather than by name. Candidates are ranked by the same dirty + clean measure the sampler
+uses, so ranking cannot prefer a process that merely scores well on a metric blind to the
+backend in play, and a candidate too small to plausibly hold a model is refused — reporting no
+figure beats silently sampling the wrong process.
+
+Discovery runs **after** the overhead calibration, never straight after load: both backends
+allocate lazily, so a backend probed too early can sit below the plausibility floor and be
+rejected.
 
 `sudo` is not required. `sudo powermetrics` may be used for supplementary investigation but is
 never part of the protocol.

@@ -20,6 +20,11 @@ from .client import StreamedTurn
 NONCE_BYTES = 8  # 16 hex characters, per §5.4
 
 _FOOTPRINT_HEADER = re.compile(r"Footprint:\s*([\d.]+)\s*([KMGT]?B)", re.IGNORECASE)
+# The TOTAL row of `footprint -p`: Dirty | Clean | Reclaimable | Regions | TOTAL
+_FOOTPRINT_TOTAL = re.compile(
+    r"^\s*([\d.]+)\s*([KMGT]?B)\s+([\d.]+)\s*([KMGT]?B)\s+[\d.]+\s*[KMGT]?B\s+\d+\s+TOTAL\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 _UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
 
 
@@ -141,8 +146,62 @@ def _parse_footprint(output: str) -> int | None:
     return int(float(value) * _UNITS.get(unit, 1))
 
 
+def _parse_total_row(output: str) -> int | None:
+    """Dirty + Clean from the TOTAL row of `footprint -p`, in bytes.
+
+    The table is `Dirty | Clean | Reclaimable | Regions | Category`. Reclaimable
+    is deliberately excluded: it is a subset already counted, not a fourth
+    quantity.
+    """
+    match = _FOOTPRINT_TOTAL.search(output)
+    if not match:
+        return None
+    dirty = float(match.group(1)) * _UNITS.get(match.group(2).upper(), 1)
+    clean = float(match.group(3)) * _UNITS.get(match.group(4).upper(), 1)
+    return int(dirty + clean)
+
+
+def resident_bytes(pid: int) -> int | None:
+    """Memory the process holds resident, counted so that MLX and llama.cpp are
+    comparable (§5.2).
+
+    Neither of the obvious metrics works, because the two runtimes put the
+    weights in different classes of memory:
+
+    - llama.cpp `mmap`s the GGUF, so the weights are **clean, file-backed**
+      pages. `phys_footprint` counts dirty pages and therefore excludes them:
+      227 MB reported for a 2.87 GB artefact.
+    - MLX allocates Metal buffers, so the weights are **dirty
+      IOAccelerator (graphics)** pages. Those are owned by the GPU and are not
+      in RSS: 707 MB reported for a 2.88 GB artefact.
+
+    Each metric is blind to exactly one runtime, in the comparison that is
+    question 1 of §1. Summing the Dirty and Clean columns of `footprint`'s TOTAL
+    row counts both, giving 2980 MB and 3310 MB for those same two artefacts.
+
+    This is an upper bound on what must stay resident: clean file-backed pages
+    are evictable under pressure. That is the right bound for §2.2, which asks
+    how much unified memory a configuration needs.
+    """
+    try:
+        completed = subprocess.run(
+            ["footprint", "-p", str(pid)], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return _parse_total_row(completed.stdout)
+
+
 def phys_footprint_bytes(pid: int) -> int | None:
-    """`footprint -p <pid>` phys_footprint. No sudo required."""
+    """`footprint -p <pid>` phys_footprint. Diagnostics only.
+
+    **Not a §5.2 measure and not comparable across runtimes**: it counts dirty
+    pages, so it excludes the clean mapped-file pages llama.cpp holds its
+    weights in. Use `resident_bytes`. Kept because the discrepancy between the
+    two is itself worth being able to inspect.
+    """
     try:
         completed = subprocess.run(
             ["footprint", "-p", str(pid)], capture_output=True, text=True, timeout=10
@@ -170,77 +229,31 @@ def rss_bytes(pid: int) -> int | None:
     return int(text) * 1024 if text.isdigit() else None
 
 
-_VM_STAT_KEYS = ("Pages wired down", "Pages active", "Pages occupied by compressor")
-
-
-def system_used_bytes(page_size: int = 16384) -> int | None:
-    """Memory actually committed system-wide: wired + active + compressed.
-
-    This, not a per-process figure, is what §5.2 measures. MLX allocates its
-    weights while llama.cpp memory-maps them, so `phys_footprint` credits one
-    runtime with the model and not the other — a bias of roughly the whole model
-    size, applied to the very comparison the benchmark exists to make. RSS
-    inverts the same bias rather than removing it.
-    """
-    try:
-        completed = subprocess.run(
-            ["vm_stat"], capture_output=True, text=True, timeout=10
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-
-    total_pages = 0
-    for key in _VM_STAT_KEYS:
-        match = re.search(rf"{key}:\s+(\d+)", completed.stdout)
-        if match is None:
-            return None
-        total_pages += int(match.group(1))
-    return total_pages * page_size
-
-
 class MemorySampler:
-    """Samples system-wide committed memory every 250 ms, retaining the maximum.
+    """Samples the inference process every 250 ms and retains the maximum (§5.2).
 
-    Reported as a delta against a baseline captured with no model loaded (§5.2),
-    so the figure answers the question §2.2 actually cares about: how much
-    unified memory this configuration needs. It does include other processes'
-    churn, which is why §3.1's quiet-machine precondition is load-bearing.
+    The measure is `resident_bytes` — dirty + clean — which is the only one of
+    the available per-process figures that counts the weights under both
+    runtimes. `footprint` costs ~50 ms, so it fits the sampling interval;
+    `vmmap -summary` gives the same answer but takes ~1 s and does not.
 
-    `pid` is optional and, when given, records a per-process footprint alongside
-    the system figure for diagnostics only. It never enters a comparison.
+    A previous revision measured a system-wide `vm_stat` delta to escape the
+    per-process bias. It escaped the bias but was too noisy to use: six runs of
+    one configuration spanned 1.54-2.82 GiB, against a spread of under 0.05 GiB
+    here.
     """
 
-    def __init__(
-        self,
-        pid: int | None = None,
-        interval_s: float = 0.25,
-        baseline_bytes: int | None = None,
-    ) -> None:
+    def __init__(self, pid: int, interval_s: float = 0.25) -> None:
         self.pid = pid
         self.interval_s = interval_s
-        self.baseline_bytes = baseline_bytes
         self.peak_bytes: int | None = None
-        self.peak_process_bytes: int | None = None
-        self.method: str = "vm_stat.wired+active+compressed"
+        self.method: str = "footprint.dirty+clean"
         self.samples = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    @property
-    def peak_delta_bytes(self) -> int | None:
-        """Peak above baseline. The reported §5.2 figure."""
-        if self.peak_bytes is None or self.baseline_bytes is None:
-            return None
-        return max(0, self.peak_bytes - self.baseline_bytes)
-
     def _sample_once(self) -> int | None:
-        if self.pid is not None:
-            process = phys_footprint_bytes(self.pid) or rss_bytes(self.pid)
-            if process is not None and (
-                self.peak_process_bytes is None or process > self.peak_process_bytes
-            ):
-                self.peak_process_bytes = process
-        return system_used_bytes()
+        return resident_bytes(self.pid)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -326,26 +339,31 @@ PROCESS_HINTS = (
     "lms-",
 )
 
-# Diagnostics only since §5.2 moved to a system-wide measure, so no plausibility
-# floor: llama.cpp mmaps its weights and legitimately reports a small footprint.
-MIN_PLAUSIBLE_BYTES = 0
+# A model must account for at least this much, or we have matched a helper
+# rather than the process holding the weights. Meaningful again now that
+# `resident_bytes` counts the weights under both runtimes: under the previous
+# system-wide measure no per-process floor could be applied, because llama.cpp
+# legitimately reported ~0.2 GiB.
+MIN_PLAUSIBLE_BYTES = 512 * 1024**2
 
 
 def find_inference_pid(
     hints: tuple[str, ...] = PROCESS_HINTS,
     min_bytes: int = MIN_PLAUSIBLE_BYTES,
 ) -> tuple[int, str] | None:
-    """Return (pid, command) of the matching process with the largest footprint.
+    """Return (pid, command) of the matching process holding the most memory.
 
-    Ranked by `phys_footprint`, not RSS. On unified memory a backend's RSS can
-    badly understate what it holds, and ranking by RSS picks the UI process.
+    Ranked by `resident_bytes`, the same measure the sampler uses, so ranking
+    cannot prefer a process that merely scores well on a metric blind to the
+    backend in play: `phys_footprint` ranks a llama.cpp backend at 0.2 GiB and
+    RSS ranks an MLX backend at 0.7 GiB, either of which loses to a helper.
+
     Returns None when no candidate is large enough to plausibly hold a model,
     which is a better outcome than silently sampling the wrong process.
 
-    **Call this after at least one inference has completed.** llama.cpp
-    allocates lazily, so immediately after `lms load` the backend can still sit
-    below `min_bytes` and be rejected — the guard against sampling the wrong
-    process then rejects the right one.
+    **Call this after at least one inference has completed**, so that lazily
+    allocated memory is in place and a backend is not rejected for sitting below
+    `min_bytes` at the moment it was probed.
     """
     try:
         completed = subprocess.run(
@@ -366,9 +384,9 @@ def find_inference_pid(
             continue
 
         pid = int(pid_text)
-        footprint = phys_footprint_bytes(pid) or rss_bytes(pid) or 0
-        if best is None or footprint > best[1]:
-            best = (pid, footprint, command)
+        resident = resident_bytes(pid) or rss_bytes(pid) or 0
+        if best is None or resident > best[1]:
+            best = (pid, resident, command)
 
     if best is None or best[1] < min_bytes:
         return None

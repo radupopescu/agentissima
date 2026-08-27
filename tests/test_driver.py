@@ -435,38 +435,87 @@ def test_whitespace_only_answer_is_also_empty(sandbox):
     assert outcome.termination_reason == "empty_answer"
 
 
-# --- §5.2 system-wide memory ------------------------------------------------
+# --- §5.2 memory: dirty + clean -----------------------------------------------
+
+from harness.metrics import MemorySampler, _parse_total_row  # noqa: E402
+
+# Real `footprint -p` output, trimmed. llama.cpp: the weights are clean,
+# file-backed pages, so phys_footprint sees 226 MB of a 2.87 GB artefact.
+LLAMA_CPP_FOOTPRINT = """\
+llama-server [74201]: 64-bit    Footprint: 226 MB (16384 bytes per page)
+
+  Dirty      Clean  Reclaimable    Regions    Category
+    ---        ---          ---        ---    ---
+ 132 MB        0 B          0 B         23    untagged (VM_ALLOCATE)
+    0 B    2746 MB          0 B          9    mapped file
+    ---        ---          ---        ---    ---
+ 226 MB    2754 MB          0 B       4266    TOTAL
+
+Auxiliary data:
+    phys_footprint: 227 MB
+"""
+
+# MLX: the mirror image. The weights are dirty GPU buffers, which RSS misses.
+MLX_FOOTPRINT = """\
+node [74979]: 64-bit    Footprint: 3230 MB (16384 bytes per page)
+
+  Dirty      Clean  Reclaimable    Regions    Category
+    ---        ---          ---        ---    ---
+2752 MB        0 B      5440 KB        848    IOAccelerator (graphics)
+    0 B      11 MB          0 B         10    mapped file
+    ---        ---          ---        ---    ---
+3230 MB      80 MB       155 MB       5778    TOTAL
+
+Auxiliary data:
+    phys_footprint: 3230 MB
+"""
 
 
-def test_system_used_bytes_is_plausible():
-    from harness.metrics import system_used_bytes
-
-    used = system_used_bytes()
-    assert used is not None
-    assert 1024**3 < used < 1024**5   # between 1 GiB and 1 PiB
-
-
-def test_peak_delta_is_measured_against_the_baseline():
-    """Peak memory is reported as a delta, because the absolute system figure
-    includes everything else running (§5.2)."""
-    from harness.metrics import MemorySampler
-
-    sampler = MemorySampler(baseline_bytes=8 * 1024**3)
-    sampler.peak_bytes = 11 * 1024**3
-    assert sampler.peak_delta_bytes == 3 * 1024**3
+def test_dirty_plus_clean_counts_mmapped_weights():
+    """The llama.cpp case: 2746 MB of clean mapped file that phys_footprint,
+    which counts dirty pages, excludes entirely."""
+    total = _parse_total_row(LLAMA_CPP_FOOTPRINT)
+    assert total == (226 + 2754) * 1024**2
+    assert total > 2.8 * 1024**3        # in the region of the 2.87 GB artefact
 
 
-def test_peak_delta_never_goes_negative():
-    from harness.metrics import MemorySampler
+def test_dirty_plus_clean_counts_gpu_buffers():
+    """The MLX case: 2752 MB of dirty IOAccelerator memory that RSS misses."""
+    total = _parse_total_row(MLX_FOOTPRINT)
+    assert total == (3230 + 80) * 1024**2
+    assert total > 3.2 * 1024**3
 
-    sampler = MemorySampler(baseline_bytes=10 * 1024**3)
-    sampler.peak_bytes = 9 * 1024**3
-    assert sampler.peak_delta_bytes == 0
+
+def test_the_two_runtimes_land_within_a_third_of_each_other():
+    """The point of the measure. On matched artefacts (2.87 vs 2.88 GB) the two
+    runtimes must not differ by roughly a whole model, as they did under
+    phys_footprint (227 MB vs 3230 MB) and under RSS in the other direction."""
+    llama = _parse_total_row(LLAMA_CPP_FOOTPRINT)
+    mlx = _parse_total_row(MLX_FOOTPRINT)
+    assert max(llama, mlx) / min(llama, mlx) < 1.33
 
 
-def test_peak_delta_is_none_without_a_baseline():
-    from harness.metrics import MemorySampler
+def test_reclaimable_is_not_added_in():
+    """It is a subset of what is already counted, not a fourth column."""
+    assert _parse_total_row(MLX_FOOTPRINT) != (3230 + 80 + 155) * 1024**2
 
-    sampler = MemorySampler()
-    sampler.peak_bytes = 5 * 1024**3
-    assert sampler.peak_delta_bytes is None
+
+def test_unparseable_footprint_output_yields_none():
+    assert _parse_total_row("nothing resembling a footprint table") is None
+
+
+def test_sampler_reports_the_maximum_sample(monkeypatch):
+    import harness.metrics as metrics
+
+    values = iter([1 * 1024**3, 3 * 1024**3, 2 * 1024**3])
+    monkeypatch.setattr(metrics, "resident_bytes", lambda pid: next(values, None))
+
+    sampler = MemorySampler(pid=999)
+    for _ in range(3):
+        value = sampler._sample_once()
+        if value is not None and (
+            sampler.peak_bytes is None or value > sampler.peak_bytes
+        ):
+            sampler.peak_bytes = value
+    assert sampler.peak_bytes == 3 * 1024**3
+    assert sampler.method == "footprint.dirty+clean"

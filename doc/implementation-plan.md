@@ -185,7 +185,7 @@ repetitions and the `flaky` flag are load-bearing rather than ceremonial.
 | W01 failed a *correct* answer that named £85 and identified £72 as superseded | The decoy may appear if marked superseded (§7.1) |
 | A turn with neither tool calls nor content was graded as an empty `final_answer` | New `empty_answer` termination reason (§4.8) |
 | **A leading `/` escaped the sandbox and was refused as "outside working directory"** — false, since the file is inside. Turn logging showed LFM-M8 run `ls -la`, see `AGENTS.md`, be told `/AGENTS.md` was outside, and thrash for ten turns | Leading `/` is root-anchored within the sandbox; `..` still refused (§4.6). **Cost every LFM configuration the whole of T01** |
-| **Peak memory was not comparable across runtimes.** llama.cpp `mmap`s its weights, so `phys_footprint` credited MLX with the model and not llama.cpp; RSS inverted the same bias | System-wide `vm_stat` delta against a no-model baseline (§5.2). **Partial fix — the replacement is unbiased but too noisy to report; see the open question below** |
+| **Peak memory was not comparable across runtimes.** llama.cpp `mmap`s its weights into clean pages, which `phys_footprint` excludes (227 MB for a 2.87 GB artefact); MLX allocates dirty GPU buffers, which RSS excludes (707 MB for a 2.88 GB artefact). Each metric is blind to one runtime | Dirty + clean from `footprint -p` counts both (§5.2). A system-wide `vm_stat` delta was tried first and rejected: unbiased, but 1.54-2.82 GiB across six runs of one configuration |
 | **Model identity was tied to LM Studio's `modelKey`, which is not stable.** The key is derived from the installed set (`@<quant>` appended only to disambiguate), and `lms load` matches it as a *substring*: `lms load lfm2.5-2.6b` matches four artefacts and under `--yes` loads the first — an MLX build — warning only on stdout, which the harness discarded on success | Models are identified by path; `resolve()` requires a unique exact match before the CLI is invoked, and the resident artefact is verified by path after load (§2.1) |
 
 ---
@@ -245,10 +245,8 @@ model.
   throughput uses `completion_tokens − 1`.
 - `overhead_median`: 20 minimal-prompt requests at `max_tokens=1`, median TTFT, measured once
   per session and stored in `environment.json`.
-- Memory sampler: background thread, system-wide `vm_stat` (wired + active + compressed) every
-  250 ms, retain the maximum, report as a delta against a no-model baseline (§5.2). Start
-  before the first request, stop after the last. A per-process `footprint -p <pid>` figure is
-  recorded alongside for diagnostics only.
+- Memory sampler: background thread, `footprint -p <pid>` every 250 ms, retain the maximum of
+  Dirty + Clean (§5.2). Start before the first request, stop after the last.
 - Swap delta from `sysctl vm.swapusage` bracketing the run; non-zero sets `swap_flag`.
 - Nonce prefix helper for Phase 1 (§5.4). Phase 2 does **not** use it.
 - Per-turn TTFT list, so `ttft_turn1_s` and `ttft_median_later_s` can be reported separately.
@@ -350,8 +348,8 @@ Not blockers, but each needs an answer recorded in `benchmark.md` when resolved.
 | How is model load time measured? | Listed as a Stage 1 metric but never defined in §5.1 |
 | Can `lms` set context length at load time? | Determines whether stages can run unattended across configurations |
 | ~~Do all six quantisations actually exist?~~ | **Resolved:** all six exist and all six now load. See §3a |
-| **How should peak memory be measured?** **Blocking for Stage 1.** | The per-process figure is precise but biased by an order of magnitude across runtimes (llama.cpp `mmap`s its weights: 0.21-0.24 GiB reported for a 2.87 GB artefact). The system-wide delta that replaced it is unbiased but noisy: six runs of one configuration on one task gave 1.54-2.82 GiB, and the no-model baseline itself drifted 9.98-10.88 GiB. A 1.3 GiB spread cannot resolve the differences §2.2 needs. Candidates: bracket the delta tightly around the load rather than across the whole run, so less unrelated activity lands in the window; take the median of the §9.1 repetitions and report the spread; or find a per-process measure that counts resident mmap'd pages. **Decide before Stage 1 runs, not after seeing figures** |
-| Does the 2 GiB headroom in §2.2 hold in practice? | It is a stated margin, not a measurement. Worth checking against observed peak memory once Stage 1 has run — blocked on the question above |
+| ~~How should peak memory be measured?~~ | **Resolved:** dirty + clean from `footprint -p`. Each runtime puts the weights where one standard metric cannot see them — llama.cpp in clean mapped-file pages (invisible to `phys_footprint`), MLX in dirty GPU buffers (invisible to RSS). Summing both columns counts both. Spread 0.03 GiB over three repetitions, against 1.28 GiB for the system-wide delta it replaced. See §5.2 |
+| Does the 2 GiB headroom in §2.2 hold in practice? | It is a stated margin, not a measurement. Worth checking against observed peak memory once Stage 1 has run. First figures: llama.cpp Q8_0 2.90-2.93 GiB, MLX 8-bit 4.18 GiB, both at 8K on W05 |
 
 ---
 

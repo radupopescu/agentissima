@@ -99,9 +99,9 @@ An exact key still works, but anything ambiguous is refused rather than resolved
 model happens to match first.
 
 Not a benchmark stage — a sanity check after touching the client, the loop or the metrics.
-`final_finish_reason` should be `stop` rather than `length`. **Do not read anything into `peak
-memory` yet:** its definition is unresolved (§5.2) and it has been observed to vary by 1.3 GiB
-across repeat runs of the same configuration.
+`final_finish_reason` should be `stop` rather than `length`, and `peak memory` should sit a
+little above the model's on-disk size — a much smaller figure means process discovery matched
+a helper rather than the backend.
 
 ---
 
