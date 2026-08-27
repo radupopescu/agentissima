@@ -43,7 +43,7 @@ whole document:
 | Consequence | Where |
 |---|---|
 | Distinguish a weak model from a broken harness or an impossible task | §8 validation gates |
-| Fail fast on configurations that cannot call tools at all | §9 Stage 0 |
+| Fail fast on a harness/configuration mismatch before long stages run | §9 Stage 0 |
 | Still discriminate when binary pass rates are near zero | §7.4 progress score |
 | Separate "cannot read code" from "cannot drive an agent loop" | §7 two suites |
 
@@ -698,6 +698,16 @@ Three trivial single-tool tasks × 3 repetitions per configuration.
 **Gate:** fewer than 2 of 3 valid tool calls ⇒ the configuration is marked `not tool-capable`,
 excluded from all agent stages, and retained in Phase 1 only. ~54 short runs.
 
+Stage 0 is a pre-flight check that the tool-calling plumbing works, not a capability
+classifier. It exists to catch a broken configuration or harness mismatch — bad tool-call
+plumbing, a corrupted artefact, a driver regression — before a stage measured in hours is run
+against it. Reconnaissance against the six §2 configurations (2026-08-27) showed every one of
+them emits valid tool calls with zero formatting errors, so the gate is expected to exclude
+nothing in the current set. It is retained regardless: the configuration set is a snapshot,
+not a permanent fixture, and a model that genuinely cannot call tools would otherwise be
+discovered only by losing Stage 2A hours to it. Weak-but-valid tool calling is *measured* by
+Suite W and the Stage 2A gate (§7, §9 Stage 2A), not gated here.
+
 ### Stage 1 — raw inference
 
 6 configurations × {8K, 16K} × 5 repetitions. The first repetition is discarded; the median of
@@ -708,8 +718,13 @@ the remaining 4 is reported alongside min and max.
 - Every prompt carries the §5.4 nonce prefix.
 - A repetition counts only if `completion_tokens ≥ 128`; otherwise it is retried with the
   alternate long-form prompt.
-- Metrics: model load time, prompt tok/s, generation tok/s, TTFT, peak memory, swap delta,
-  total time, input and output token counts.
+- Metrics: prompt tok/s, generation tok/s, TTFT, peak memory, swap delta, total time, input
+  and output token counts.
+
+Model load time is **not** a metric. §9.0 loads each configuration once per stage precisely
+because load duration is not part of what the benchmark measures: TTFT and every other §5.1
+timing are defined against an already-serving model, and the duration of `lms load` is a
+property of LM Studio's loader, not of agent work.
 
 ### Stage 2A — Suite W at 8K
 

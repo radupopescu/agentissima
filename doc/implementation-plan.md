@@ -152,8 +152,8 @@ v1 scores were taken before the leading-`/` fix and are shown only to size its e
 column predates the §5.2 change and is not comparable across runtimes; ignore it.
 
 - **Zero invalid tool calls anywhere, in either version.** Tool-call *formatting* is not the
-  bottleneck for any configuration, which is not what §1.2 predicted. Stage 0 as specified may
-  gate nothing.
+  bottleneck for any configuration, which is not what §1.2 predicted. Stage 0 as specified will
+  gate nothing in this set; kept as a pre-flight check — see the resolved question in §6.
 - **T01 now passes on all four LFM configurations, in 3 tool calls each.** Under v1 every one
   of them failed it. That was the harness, not the models.
 - **Bonsai is unchanged at 0/3** and its failure mode never touched path handling: 0-1 tool
@@ -295,9 +295,6 @@ model.
 - A long-form generation prompt that reliably produces `completion_tokens ≥ 128`, plus an
   alternate for the retry path.
 - Nonce prefix applied per §5.4.
-- Model load time: decide how it is measured. LM Studio may report it; otherwise time an
-  explicit load via `lms load`, or take the first-request latency after load and label it as
-  such. Whatever is chosen, define it in §5.1 rather than leaving it implicit.
 
 ### M6 — Reporting (§10.2–§10.4)
 
@@ -344,8 +341,8 @@ Not blockers, but each needs an answer recorded in `benchmark.md` when resolved.
 | Does LM Studio honour `seed`, `top_k` and `repeat_penalty` on both backends? | §4.2 claims a fixed sampling block. **Still open.** `extra_body` is accepted without error, but that only proves it is not rejected. A first attempt to test `seed` was invalid: at `max_tokens=40` every token went to reasoning, so both samples were empty strings and compared equal. Retest with enough tokens for content to appear |
 | ~~Is the reasoning ratio stable across configurations?~~ | **Resolved:** no. LFM 60-91 %, Bonsai 0 %. Promote to the §10.3 table |
 | Is `max_tokens=1024` too tight for reasoning models? | **Mostly resolved, narrowed.** The v1 evidence for raising it was the leading-`/` defect, not the token budget: LFM-M8's T01 was thrashing on false path errors, and under v2 it completes in 3 turns well inside 1024. Keep 1024. **Still genuinely open for the write-heavy tasks** — T03, T07 and T09 require emitting whole file contents through `write_file`, and with 60-91 % of the budget going to reasoning, a 40-line file plausibly will not fit in one turn. Check T03 and T09 specifically before Stage 2B; do not generalise from the retrieval tasks |
-| Is Stage 0 worth keeping? | Every configuration emitted valid tool calls with zero formatting errors, so the gate as specified may exclude nothing. Bonsai fails by giving up after one call, which Stage 0 would pass. Consider whether the gate should test persistence rather than syntax — but decide before running, not after seeing scores |
-| How is model load time measured? | Listed as a Stage 1 metric but never defined in §5.1 |
+| ~~Is Stage 0 worth keeping?~~ | **Resolved: keep, unchanged.** Reconnaissance showed all six configurations emit valid tool calls with zero formatting errors, so the gate is expected to exclude nothing in the current set. It is retained as a pre-flight check against harness/configuration mismatch — the configuration set is a snapshot, and a future model that cannot call tools would otherwise cost Stage 2A hours to discover. A persistence-style gate was considered and rejected: persistence is a continuous capability already measured by the progress score and the Stage 2A gate, and gating on it would blur gate and measurement. §9 Stage 0 and §1.2 amended accordingly |
+| ~~How is model load time measured?~~ | **Resolved: it is not measured.** Removed from the Stage 1 metric list in §9. §5.1 timings are defined against an already-serving model, and §9.0 loads once per stage precisely to keep load time out of them; the duration of `lms load` would measure LM Studio's loader, not agent work. Time to first token on a loaded model, which is relevant, is already covered by TTFT |
 | Can `lms` set context length at load time? | Determines whether stages can run unattended across configurations |
 | ~~Do all six quantisations actually exist?~~ | **Resolved:** all six exist and all six now load. See §3a |
 | ~~How should peak memory be measured?~~ | **Resolved:** dirty + clean from `footprint -p`. Each runtime puts the weights where one standard metric cannot see them — llama.cpp in clean mapped-file pages (invisible to `phys_footprint`), MLX in dirty GPU buffers (invisible to RSS). Summing both columns counts both. Spread 0.03 GiB over three repetitions, against 1.28 GiB for the system-wide delta it replaced. See §5.2 |
