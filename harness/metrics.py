@@ -170,27 +170,77 @@ def rss_bytes(pid: int) -> int | None:
     return int(text) * 1024 if text.isdigit() else None
 
 
-class MemorySampler:
-    """Samples a process's memory every 250 ms and retains the maximum (§5.2)."""
+_VM_STAT_KEYS = ("Pages wired down", "Pages active", "Pages occupied by compressor")
 
-    def __init__(self, pid: int, interval_s: float = 0.25) -> None:
+
+def system_used_bytes(page_size: int = 16384) -> int | None:
+    """Memory actually committed system-wide: wired + active + compressed.
+
+    This, not a per-process figure, is what §5.2 measures. MLX allocates its
+    weights while llama.cpp memory-maps them, so `phys_footprint` credits one
+    runtime with the model and not the other — a bias of roughly the whole model
+    size, applied to the very comparison the benchmark exists to make. RSS
+    inverts the same bias rather than removing it.
+    """
+    try:
+        completed = subprocess.run(
+            ["vm_stat"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    total_pages = 0
+    for key in _VM_STAT_KEYS:
+        match = re.search(rf"{key}:\s+(\d+)", completed.stdout)
+        if match is None:
+            return None
+        total_pages += int(match.group(1))
+    return total_pages * page_size
+
+
+class MemorySampler:
+    """Samples system-wide committed memory every 250 ms, retaining the maximum.
+
+    Reported as a delta against a baseline captured with no model loaded (§5.2),
+    so the figure answers the question §2.2 actually cares about: how much
+    unified memory this configuration needs. It does include other processes'
+    churn, which is why §3.1's quiet-machine precondition is load-bearing.
+
+    `pid` is optional and, when given, records a per-process footprint alongside
+    the system figure for diagnostics only. It never enters a comparison.
+    """
+
+    def __init__(
+        self,
+        pid: int | None = None,
+        interval_s: float = 0.25,
+        baseline_bytes: int | None = None,
+    ) -> None:
         self.pid = pid
         self.interval_s = interval_s
+        self.baseline_bytes = baseline_bytes
         self.peak_bytes: int | None = None
-        self.method: str | None = None
+        self.peak_process_bytes: int | None = None
+        self.method: str = "vm_stat.wired+active+compressed"
         self.samples = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+    @property
+    def peak_delta_bytes(self) -> int | None:
+        """Peak above baseline. The reported §5.2 figure."""
+        if self.peak_bytes is None or self.baseline_bytes is None:
+            return None
+        return max(0, self.peak_bytes - self.baseline_bytes)
+
     def _sample_once(self) -> int | None:
-        value = phys_footprint_bytes(self.pid)
-        if value is not None:
-            self.method = "footprint.phys_footprint"
-            return value
-        value = rss_bytes(self.pid)
-        if value is not None:
-            self.method = "ps.rss"
-        return value
+        if self.pid is not None:
+            process = phys_footprint_bytes(self.pid) or rss_bytes(self.pid)
+            if process is not None and (
+                self.peak_process_bytes is None or process > self.peak_process_bytes
+            ):
+                self.peak_process_bytes = process
+        return system_used_bytes()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -276,9 +326,9 @@ PROCESS_HINTS = (
     "lms-",
 )
 
-# A model must account for at least this much, or we have matched a helper
-# rather than the process holding the weights.
-MIN_PLAUSIBLE_BYTES = 512 * 1024**2
+# Diagnostics only since §5.2 moved to a system-wide measure, so no plausibility
+# floor: llama.cpp mmaps its weights and legitimately reports a small footprint.
+MIN_PLAUSIBLE_BYTES = 0
 
 
 def find_inference_pid(
@@ -291,6 +341,11 @@ def find_inference_pid(
     badly understate what it holds, and ranking by RSS picks the UI process.
     Returns None when no candidate is large enough to plausibly hold a model,
     which is a better outcome than silently sampling the wrong process.
+
+    **Call this after at least one inference has completed.** llama.cpp
+    allocates lazily, so immediately after `lms load` the backend can still sit
+    below `min_bytes` and be rejected — the guard against sampling the wrong
+    process then rejects the right one.
     """
     try:
         completed = subprocess.run(

@@ -146,3 +146,34 @@ def test_pytest_is_not_allowed_in_the_workspace_fixture(sandbox):
 def test_pipes_between_allowed_commands_work(sandbox):
     result = call(sandbox, "run_command", command="cat data/a.txt | wc -l")
     assert result.result.startswith("exit=0")
+
+
+# --- leading slash is root-anchored inside the sandbox (§4.6) ----------------
+
+
+def test_leading_slash_resolves_against_the_sandbox_root(sandbox):
+    """The sandbox root is the model's whole visible filesystem, so /x denotes
+    the same file as x. Without this, pathlib discards the root and the path is
+    refused with a message claiming it is outside the directory."""
+    assert call(sandbox, "read_file", path="/data/a.txt").result == "hello\nworld\n"
+    assert call(sandbox, "read_file", path="data/a.txt").result == "hello\nworld\n"
+
+
+def test_leading_slash_does_not_count_as_a_path_error(sandbox):
+    call(sandbox, "read_file", path="/data/a.txt")
+    assert sandbox.path_errors == 0
+
+
+def test_leading_slash_list_and_search_work(sandbox):
+    assert "a.txt" in call(sandbox, "list_files", path="/data").result
+    assert call(sandbox, "search_files", pattern="world", path="/").result == "data/a.txt:2:world"
+
+
+def test_traversal_after_a_leading_slash_is_still_refused(sandbox):
+    result = call(sandbox, "read_file", path="/../../etc/passwd")
+    assert "outside working directory" in result.result
+
+
+def test_write_through_a_leading_slash_stays_inside(sandbox, tmp_path):
+    assert call(sandbox, "write_file", path="/out/new.txt", content="v").result == "ok"
+    assert (tmp_path / "out" / "new.txt").read_text() == "v"

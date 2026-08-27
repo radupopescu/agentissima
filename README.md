@@ -1,6 +1,6 @@
-# local-llm-benchmark
+# interview
 
-An agent benchmark for local LLMs on Apple silicon, run through LM Studio.
+A benchmark for local agent LLMs on Apple silicon, run through LM Studio.
 
 It answers three separable questions — MLX or llama.cpp/Metal, LFM2.5-2.6B or
 Ternary-Bonsai-8B, and which quantisation gives the best quality/latency/memory trade-off —
@@ -87,14 +87,21 @@ These guard the properties the benchmark's validity rests on: tool calls are nev
 
 Requires LM Studio running. Loads a model, runs one task through the `native` driver, unloads.
 
+Models are named by **path**, not by LM Studio's model key: keys shift as models are installed
+and removed (§2.1). `lms ls --json` lists the paths.
+
 ```sh
-.venv/bin/python -m harness.smoke                      # lfm2.5-2.6b-mlx, task W01
-.venv/bin/python -m harness.smoke lfm2.5-2.6b@q8_0 W05
+.venv/bin/python -m harness.smoke   # LiquidAI/LFM2.5-2.6B-MLX-8bit, task W01
+.venv/bin/python -m harness.smoke LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-Q8_0.gguf W05
 ```
 
+An exact key still works, but anything ambiguous is refused rather than resolved to whichever
+model happens to match first.
+
 Not a benchmark stage — a sanity check after touching the client, the loop or the metrics.
-`peak_memory` should be large enough to plausibly hold the model, and `final_finish_reason`
-should be `stop` rather than `length`.
+`final_finish_reason` should be `stop` rather than `length`. **Do not read anything into `peak
+memory` yet:** its definition is unresolved (§5.2) and it has been observed to vary by 1.3 GiB
+across repeat runs of the same configuration.
 
 ---
 

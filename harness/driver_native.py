@@ -68,7 +68,11 @@ class NativeDriver:
 
             if not turn.tool_calls:
                 answer = turn.content
-                termination = "final_answer"
+                # A turn with no tool calls and no content is not an answer.
+                # Reasoning models can spend a whole turn in reasoning_content
+                # and emit nothing; that must not be graded as an empty answer
+                # the model chose to give (§4.8).
+                termination = "final_answer" if answer.strip() else "empty_answer"
                 break
 
             messages.append(_assistant_message(turn))

@@ -33,9 +33,13 @@ The harness half runs with no model and no network (43 tests):
 .venv/bin/python -m pytest -q
 ```
 
-**Verified end-to-end** against `lfm2.5-2.6b-mlx` at 8K: W01 passes, 5 valid tool calls,
-0 invalid, TTFT 1.0 s, 31 gen tok/s, 912 prompt tok/s, 6.5 GiB peak. Re-check with
-`python -m harness.smoke [model-key] [task-id]` after touching the client, loop or metrics.
+**Verified end-to-end** at 8K: W01 passes, 5 valid tool calls, 0 invalid. Re-check with
+`python -m harness.smoke [model-path] [task-id]` after touching the client, loop or metrics.
+
+> The original note recorded this against model key `lfm2.5-2.6b-mlx`, which no longer resolves
+> — two MLX builds are now installed, so the key gained an `@<quant>` suffix. Which artefact
+> produced its timings cannot now be established, so they have been dropped. This is the §2.1
+> identifier defect appearing in the project's own records, and the reason paths replaced keys.
 
 Four defects that only a real model exposed, now fixed and covered by tests:
 
@@ -101,6 +105,91 @@ These gate everything in §4 and are not automatable from here.
 
 ---
 
+## 3a. Reconnaissance findings (2026-08-27, `task_set_version: v2`)
+
+**Not benchmark data.** One shot per task, one context, no environment capture, no repetitions.
+Nothing here may be quoted as a result or written to `results/`. It exists to de-risk M3-M5.
+
+### Artefact mapping — all six §2 rows have a working artefact
+
+Identified by path, which is stable. The key column is a snapshot of what LM Studio derived
+from the currently installed set and **will change** if models are added or removed (§2.1).
+
+| §2 ID | Path (stable) | Size | Key at time of writing | Notes |
+|---|---|---|---|---|
+| LFM-M8 | `LiquidAI/LFM2.5-2.6B-MLX-8bit` | 2.88 GB | `lfm2.5-2.6b-mlx@8bit` | replaced an `mlx-community` build that crashed the MLX backend on load; that build has been removed |
+| LFM-G8 | `LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-Q8_0.gguf` | 2.87 GB | `lfm2.5-2.6b@q8_0` | |
+| LFM-GQ4 | `LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-QAD-Q4_0.gguf` | 1.59 GB | `lfm2.5-2.6b@q4_0` | **confirmed QAD**, not ordinary Q4_0 |
+| LFM-BF16 | `LiquidAI/LFM2.5-2.6B-MLX-bf16` | 5.41 GB | `lfm2.5-2.6b-mlx@bf16` | |
+| BON-M2 | `prism-ml/Ternary-Bonsai-8B-mlx-2bit` | 2.32 GB | `ternary-bonsai-8b-mlx` | |
+| BON-G2 | `prism-ml/Ternary-Bonsai-8B-gguf/Ternary-Bonsai-8B-Q2_0_g64.gguf` | 2.31 GB | `ternary-bonsai-8b` | unsuffixed key: only one Bonsai GGUF is installed. Installing a second renames this one. Runtime reports quantisation as `null` |
+
+Ternary-Bonsai-8B reports architecture `qwen3`.
+
+### Context ceilings differ within a model
+
+| Configuration | `maxContextLength` |
+|---|---|
+| LFM Q8_0, 8-bit, bf16 | 131072 |
+| LFM QAD Q4_0 | **128000** |
+| Bonsai, both | **65536** |
+
+Confirms §2.1's refusal to assume: two quantisations of one model do not share a ceiling.
+Bonsai cannot reach 128K, so Stage 4's 64K is its maximum.
+
+### Behaviour — W01 / W05 / T01 at 8K
+
+| Configuration | v1 | **v2** | mean progress | gen tok/s | overhead | peak (v1, per-process) |
+|---|---|---|---|---|---|---|
+| LFM-M8 (MLX 8-bit) | 2/3 | **3/3** | 4.0 | 56 | 306 ms | 4.6 GiB |
+| LFM-BF16 (MLX) | 2/3 | **3/3** | 4.0 | 31 | 468 ms | 6.4 GiB |
+| LFM-GQ4 (QAD Q4_0) | 2/3 | **3/3** | 4.0 | 86 | 34 ms | — |
+| LFM-G8 (Q8_0) | 1/3 | 2/3 | 3.3 | 53 | 37 ms | — |
+| BON-M2 | 0/3 | 0/3 | 1.0 | 64 | 255 ms | 3.8 GiB |
+| BON-G2 | 0/3 | 0/3 | 1.0 | 38 | 44 ms | 1.2 GiB |
+
+v1 scores were taken before the leading-`/` fix and are shown only to size its effect. The peak
+column predates the §5.2 change and is not comparable across runtimes; ignore it.
+
+- **Zero invalid tool calls anywhere, in either version.** Tool-call *formatting* is not the
+  bottleneck for any configuration, which is not what §1.2 predicted. Stage 0 as specified may
+  gate nothing.
+- **T01 now passes on all four LFM configurations, in 3 tool calls each.** Under v1 every one
+  of them failed it. That was the harness, not the models.
+- **Bonsai is unchanged at 0/3** and its failure mode never touched path handling: 0-1 tool
+  calls, then an answer from parametric knowledge without exploring. Both builds return
+  byte-identical answers, which is also a useful determinism signal for the harness. Stage 0
+  would pass this behaviour.
+- **Reasoning share is a per-model property**: LFM 60-91 %, Bonsai 0 %. It drives agent latency
+  far more than raw tok/s and belongs in the §10.3 table.
+- **Per-request overhead is ~10x higher on MLX** (255-468 ms) than llama.cpp (34-44 ms). Since
+  `prompt_tps` subtracts `overhead_median`, this bears directly on the runtime question.
+- LFM-G8 on W01 is the one remaining LFM failure: 33 calls, `empty_answer`, where LFM-GQ4
+  does it in 6. Single-shot, so indistinguishable from variance — see below.
+
+### Run-to-run variance at `temperature=0` is real
+
+T02 on LFM-M8, varying only `max_tokens`: pass at 1024, **fail at 2048**, pass at 4096. A
+budget effect cannot produce that shape. This is the near-but-not-bitwise determinism §4.2
+warns about, showing up as an outcome flip, and it is the first hard evidence that §9.1's three
+repetitions and the `flaky` flag are load-bearing rather than ceremonial.
+
+### Harness defects found and fixed
+
+| Defect | Fix |
+|---|---|
+| LFM2.5 emits `reasoning_content` before any `content`; TTFT measured from first *content* folded the whole reasoning phase into prefill and inflated gen tok/s | `t_first` counts reasoning; `reasoning_tokens` recorded separately (§5.1) |
+| Process discovery matched the Electron renderer instead of the backend | Hints target the backend; ranked by footprint, not RSS (§5.2) |
+| Process discovery ran immediately after load; llama.cpp allocates lazily and was rejected as too small | Discover **after** overhead calibration (§5.2) |
+| `max_tokens=1` made LM Studio finish without emitting a token delta, so overhead calibration silently returned 0.0 | `max_tokens=8`; no timed sample now fails loudly (§5.1) |
+| W01 failed a *correct* answer that named £85 and identified £72 as superseded | The decoy may appear if marked superseded (§7.1) |
+| A turn with neither tool calls nor content was graded as an empty `final_answer` | New `empty_answer` termination reason (§4.8) |
+| **A leading `/` escaped the sandbox and was refused as "outside working directory"** — false, since the file is inside. Turn logging showed LFM-M8 run `ls -la`, see `AGENTS.md`, be told `/AGENTS.md` was outside, and thrash for ten turns | Leading `/` is root-anchored within the sandbox; `..` still refused (§4.6). **Cost every LFM configuration the whole of T01** |
+| **Peak memory was not comparable across runtimes.** llama.cpp `mmap`s its weights, so `phys_footprint` credited MLX with the model and not llama.cpp; RSS inverted the same bias | System-wide `vm_stat` delta against a no-model baseline (§5.2). **Partial fix — the replacement is unbiased but too noisy to report; see the open question below** |
+| **Model identity was tied to LM Studio's `modelKey`, which is not stable.** The key is derived from the installed set (`@<quant>` appended only to disambiguate), and `lms load` matches it as a *substring*: `lms load lfm2.5-2.6b` matches four artefacts and under `--yes` loads the first — an MLX build — warning only on stdout, which the harness discarded on success | Models are identified by path; `resolve()` requires a unique exact match before the CLI is invoked, and the resident artefact is verified by path after load (§2.1) |
+
+---
+
 ## 4. Milestones
 
 Ordered. Each is independently verifiable.
@@ -129,7 +218,8 @@ Details that will bite:
 
 1. `messages = [system(assemble(task.extra_rules)), user(task.prompt)]`
 2. Stream a completion with `TOOL_SCHEMAS`.
-3. If the assistant message has no tool calls → `final_answer`, return.
+3. If the assistant message has no tool calls → `final_answer` when it carries content,
+   `empty_answer` when it does not (§4.8); return either way.
 4. Otherwise append the assistant message **with its `tool_calls` intact**, then one `tool`
    message per call carrying `tool_call_id` and the result of
    `dispatch(sandbox, name, raw_arguments)`.
@@ -155,8 +245,10 @@ model.
   throughput uses `completion_tokens − 1`.
 - `overhead_median`: 20 minimal-prompt requests at `max_tokens=1`, median TTFT, measured once
   per session and stored in `environment.json`.
-- Memory sampler: background thread, `footprint -p <pid>` every 250 ms, retain the maximum
-  `phys_footprint`. Start before the first request, stop after the last.
+- Memory sampler: background thread, system-wide `vm_stat` (wired + active + compressed) every
+  250 ms, retain the maximum, report as a delta against a no-model baseline (§5.2). Start
+  before the first request, stop after the last. A per-process `footprint -p <pid>` figure is
+  recorded alongside for diagnostics only.
 - Swap delta from `sysctl vm.swapusage` bracketing the run; non-zero sets `swap_flag`.
 - Nonce prefix helper for Phase 1 (§5.4). Phase 2 does **not** use it.
 - Per-turn TTFT list, so `ttft_turn1_s` and `ttft_median_later_s` can be reported separately.
@@ -252,11 +344,14 @@ Not blockers, but each needs an answer recorded in `benchmark.md` when resolved.
 | Question | Why it matters |
 |---|---|
 | Does LM Studio honour `seed`, `top_k` and `repeat_penalty` on both backends? | §4.2 claims a fixed sampling block. **Still open.** `extra_body` is accepted without error, but that only proves it is not rejected. A first attempt to test `seed` was invalid: at `max_tokens=40` every token went to reasoning, so both samples were empty strings and compared equal. Retest with enough tokens for content to appear |
-| Is the reasoning ratio stable across configurations? | LFM2.5 spent 269 of 451 completion tokens on reasoning. If that varies by model it is a headline result, not a footnote — it drives agent latency far more than raw tok/s |
+| ~~Is the reasoning ratio stable across configurations?~~ | **Resolved:** no. LFM 60-91 %, Bonsai 0 %. Promote to the §10.3 table |
+| Is `max_tokens=1024` too tight for reasoning models? | **Mostly resolved, narrowed.** The v1 evidence for raising it was the leading-`/` defect, not the token budget: LFM-M8's T01 was thrashing on false path errors, and under v2 it completes in 3 turns well inside 1024. Keep 1024. **Still genuinely open for the write-heavy tasks** — T03, T07 and T09 require emitting whole file contents through `write_file`, and with 60-91 % of the budget going to reasoning, a 40-line file plausibly will not fit in one turn. Check T03 and T09 specifically before Stage 2B; do not generalise from the retrieval tasks |
+| Is Stage 0 worth keeping? | Every configuration emitted valid tool calls with zero formatting errors, so the gate as specified may exclude nothing. Bonsai fails by giving up after one call, which Stage 0 would pass. Consider whether the gate should test persistence rather than syntax — but decide before running, not after seeing scores |
 | How is model load time measured? | Listed as a Stage 1 metric but never defined in §5.1 |
 | Can `lms` set context length at load time? | Determines whether stages can run unattended across configurations |
-| Do all six quantisations actually exist? | §2's table may need amending on the evidence |
-| Does the 2 GiB headroom in §2.2 hold in practice? | It is a stated margin, not a measurement. Worth checking against observed peak memory once Stage 1 has run |
+| ~~Do all six quantisations actually exist?~~ | **Resolved:** all six exist and all six now load. See §3a |
+| **How should peak memory be measured?** **Blocking for Stage 1.** | The per-process figure is precise but biased by an order of magnitude across runtimes (llama.cpp `mmap`s its weights: 0.21-0.24 GiB reported for a 2.87 GB artefact). The system-wide delta that replaced it is unbiased but noisy: six runs of one configuration on one task gave 1.54-2.82 GiB, and the no-model baseline itself drifted 9.98-10.88 GiB. A 1.3 GiB spread cannot resolve the differences §2.2 needs. Candidates: bracket the delta tightly around the load rather than across the whole run, so less unrelated activity lands in the window; take the median of the §9.1 repetitions and report the spread; or find a per-process measure that counts resident mmap'd pages. **Decide before Stage 1 runs, not after seeing figures** |
+| Does the 2 GiB headroom in §2.2 hold in practice? | It is a stated margin, not a measurement. Worth checking against observed peak memory once Stage 1 has run — blocked on the question above |
 
 ---
 

@@ -417,3 +417,56 @@ def test_w01_accepts_naming_the_decoy_as_superseded(tmp_path):
     assert not _check_w01(ctx("The cap is either £85 or £72."))
     # The decoy alone still fails, which is what the adversarial control does.
     assert not _check_w01(ctx("The cap is £72 per day."))
+
+
+def test_turn_with_neither_tool_calls_nor_content_is_not_an_answer(sandbox):
+    """A reasoning model can spend a whole turn in reasoning_content. That is a
+    generation failure, not an empty answer the model chose to give (§4.8)."""
+    empty = StreamedTurn(content="", t_request=0.0, t_first=0.1, t_last=0.2,
+                         prompt_tokens=10, completion_tokens=40,
+                         reasoning_tokens=40, finish_reason="stop")
+    outcome = run([empty], sandbox)
+    assert outcome.termination_reason == "empty_answer"
+    assert outcome.answer == ""
+
+
+def test_whitespace_only_answer_is_also_empty(sandbox):
+    outcome = run([answer_turn("   \n  ")], sandbox)
+    assert outcome.termination_reason == "empty_answer"
+
+
+# --- §5.2 system-wide memory ------------------------------------------------
+
+
+def test_system_used_bytes_is_plausible():
+    from harness.metrics import system_used_bytes
+
+    used = system_used_bytes()
+    assert used is not None
+    assert 1024**3 < used < 1024**5   # between 1 GiB and 1 PiB
+
+
+def test_peak_delta_is_measured_against_the_baseline():
+    """Peak memory is reported as a delta, because the absolute system figure
+    includes everything else running (§5.2)."""
+    from harness.metrics import MemorySampler
+
+    sampler = MemorySampler(baseline_bytes=8 * 1024**3)
+    sampler.peak_bytes = 11 * 1024**3
+    assert sampler.peak_delta_bytes == 3 * 1024**3
+
+
+def test_peak_delta_never_goes_negative():
+    from harness.metrics import MemorySampler
+
+    sampler = MemorySampler(baseline_bytes=10 * 1024**3)
+    sampler.peak_bytes = 9 * 1024**3
+    assert sampler.peak_delta_bytes == 0
+
+
+def test_peak_delta_is_none_without_a_baseline():
+    from harness.metrics import MemorySampler
+
+    sampler = MemorySampler()
+    sampler.peak_bytes = 5 * 1024**3
+    assert sampler.peak_delta_bytes is None

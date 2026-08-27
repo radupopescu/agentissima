@@ -1,6 +1,11 @@
 # Local LLM Agent Benchmark
 
-**Task set version:** `v1`. See §11 for what invalidates results.
+**Task set version:** `v2`. See §11 for what invalidates results.
+
+| Version | Change |
+|---|---|
+| `v2` | Leading `/` is root-anchored within the sandbox (§4.6). Changes tool behaviour, so `v1` results are not comparable |
+| `v1` | Initial task set |
 
 This document specifies the benchmark protocol: what is measured, how, and under what
 controls. It is the authoritative description. Where a value cannot be known before setup, it
@@ -63,6 +68,8 @@ For each configuration, the setup probe writes `configs/<id>.resolved.yaml`:
 
 | Field | Source |
 |---|---|
+| `model_path` | LM Studio `indexedModelIdentifier` — the stable identity (see below) |
+| `model_key` | LM Studio `modelKey` at the time of the run — recorded, never relied on |
 | `model_repo`, `model_revision` | LM Studio model metadata |
 | `quant_file`, `quant_sha256` | on-disk artefact |
 | `on_disk_bytes` | on-disk artefact |
@@ -72,6 +79,24 @@ For each configuration, the setup probe writes `configs/<id>.resolved.yaml`:
 **No configuration is assumed to support a context length.** A requested context greater than
 `advertised_max_context` is skipped and recorded as `unsupported` — never estimated,
 extrapolated, or silently clamped.
+
+> **Models are identified by path, never by LM Studio's model key.** The key is derived from
+> the set of models currently installed: LM Studio appends `@<quant>` only where one is needed
+> to disambiguate. With a single Bonsai GGUF present the key is `ternary-bonsai-8b`; install a
+> second and the first is silently renamed. A key recorded in a result set therefore need not
+> denote the same artefact when read back.
+>
+> Worse, `lms load` matches its argument as a **substring** and, under `--yes`, loads the first
+> of several matches after a warning that a caller checking only the exit status never sees:
+> `lms load lfm2.5-2.6b` matches four artefacts and loads an MLX build. For a measuring
+> instrument that is the worst available failure mode — the run succeeds and the results are
+> attributed to the wrong row of §2.
+>
+> The harness therefore takes a path, resolves it to a key against `lms ls --json` requiring a
+> unique exact match, and after loading **verifies the resident artefact by path**. Ambiguous
+> or unknown identifiers are refused before the CLI is invoked. `quant_sha256` remains the
+> final check on artefact identity; path resolution is what prevents loading the wrong one in
+> the first place.
 
 ### 2.2 Memory admissibility
 
@@ -116,6 +141,8 @@ macos_build            sw_vers -buildVersion
 lmstudio_version       LM Studio app version
 backend_runtime        runtime name + version (MLX or llama.cpp build)
 config_id              §2 table ID
+model_path             LM Studio indexedModelIdentifier - stable model identity (§2.1)
+model_key              LM Studio modelKey at run time - not stable, recorded for tracing
 model_repo             model repository identifier
 model_revision         pinned revision
 quant_file             filename
@@ -269,8 +296,15 @@ the model.
 
 - Each run receives a **fresh copy** of its fixture in a temporary directory. That directory is
   the root and the only writable area.
-- Paths escaping the root after normalisation return `error: path outside working directory`.
-  Path violations return an error string; they never raise and never abort the run.
+- **A leading `/` is root-anchored within the sandbox**, as under chroot: the root is the
+  model's entire visible filesystem, so `/src/x.py` and `src/x.py` denote the same file.
+  Without this, `root / "/x"` discards the root under pathlib semantics, escapes to the real
+  filesystem, and is refused with a message stating the path is outside the working directory —
+  which is false, unactionable, and observed to cost models entire tasks while inflating the
+  `path_errors` that W04 and T04 grade on.
+- Paths escaping the root after normalisation — including `..` traversal after a leading `/` —
+  return `error: path outside working directory`. Path violations return an error string; they
+  never raise and never abort the run.
 - `run_command` uses a per-fixture allowlist, matched on the leading token of **every** command
   segment:
 
@@ -315,11 +349,16 @@ The run ends on whichever occurs first:
 
 | Condition | `termination_reason` |
 |---|---|
-| Assistant message with no tool calls | `final_answer` |
+| Assistant message with no tool calls, carrying content | `final_answer` |
+| Assistant message with neither tool calls nor content | `empty_answer` |
 | 25 assistant turns | `max_steps` |
 | 600 s wall clock | `timeout` |
 | 3 consecutive identical tool calls (same name and arguments) | `loop_detected` |
 | 5 consecutive invalid tool calls | `malformed_calls` |
+
+`empty_answer` is separated from `final_answer` because a reasoning model can spend an entire
+turn in `reasoning_content` and emit nothing else. Grading that as an empty answer the model
+chose to give would misattribute a generation failure to a wrong answer.
 
 **Precedence.** Conditions are evaluated in the order they occur, so the earliest trigger wins.
 Repeating one malformed call therefore reports `loop_detected` at the third call, not
@@ -371,13 +410,40 @@ would silently leave prompt tok/s unadjusted.
 
 | Term | Definition |
 |---|---|
-| **Peak memory** | Maximum `phys_footprint` from `footprint -p <pid>` for the LM Studio inference process, sampled every 250 ms for the duration of the run. Candidate processes are ranked by footprint, never by RSS: on unified memory a backend's RSS badly understates what it holds, and ranking by RSS selects the UI process instead. |
+| **Peak memory** | Maximum system-wide committed memory (`vm_stat` wired + active + compressed) during the run, sampled every 250 ms, **minus a baseline captured at session start with no model loaded**. Reported as the delta. |
 | **Swap delta** | `sysctl vm.swapusage` used-bytes at run end minus at run start. |
 
-The inference process name is **discovered at setup**, never hardcoded — LM Studio runs
-backends as separate child processes and the name differs between MLX and llama.cpp. Discovery
-refuses to return a process too small to plausibly hold a model, because sampling the wrong
-process silently is worse than reporting no figure at all.
+> **Why not a per-process figure.** MLX allocates its weights; llama.cpp memory-maps them
+> (`mmap+mlock`). `phys_footprint` therefore credits MLX with the model and not llama.cpp, and
+> RSS inverts the same bias rather than removing it. Measured on one machine at matched size:
+>
+> | Configuration | on disk | per-process `phys_footprint` |
+> |---|---|---|
+> | MLX 8-bit | 2.88 GB | 3.55 GiB — the weights are counted |
+> | llama.cpp Q8_0 | 2.87 GB | 0.21–0.24 GiB over 3 runs — they are not |
+>
+> An order of magnitude, in the runtime comparison that is question 1 of §1. No per-process
+> metric can be made comparable across two runtimes that acquire memory by different means.
+
+**Unresolved: the delta is not yet reproducible enough to report.** Six runs of one
+configuration (llama.cpp Q8_0, W05, 8K context) gave deltas of 1.54, 1.65, 1.78, 1.80, 2.08
+and 2.82 GiB — a spread of 1.3 GiB, which is roughly half the model. The baseline itself
+drifted between 9.98 and 10.88 GiB, so the machine does not return to a common floor after an
+unload. Over the same six runs the per-process figure stayed within 0.03 GiB.
+
+So the current definition trades a *biased but precise* measure for an *unbiased but noisy*
+one, and the noise is of the same order as the differences between configurations that §2.2
+needs to resolve. §3.1's quiet-machine precondition is load-bearing rather than advisory, and
+is on this evidence not sufficient on its own. Baseline and peak are both recorded so the
+delta stays auditable. Resolving this is a prerequisite for Stage 1 — see the open question in
+the implementation plan; do not quote peak-memory figures until it is settled.
+
+A per-process footprint is still recorded alongside, for diagnostics only. It never enters a
+comparison. The inference process name is discovered at runtime, never hardcoded — LM Studio
+runs backends as separate child processes and the name differs between MLX and llama.cpp — and
+discovery runs **after** the overhead calibration, never straight after load: llama.cpp
+allocates lazily, so a backend probed too early is not yet identifiable as the process holding
+the weights.
 
 `sudo` is not required. `sudo powermetrics` may be used for supplementary investigation but is
 never part of the protocol.

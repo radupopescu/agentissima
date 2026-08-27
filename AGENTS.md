@@ -1,6 +1,6 @@
-# local-llm-benchmark
+# interview
 
-An agent benchmark for local LLMs on Apple silicon, run through LM Studio.
+A benchmark for local agent LLMs on Apple silicon, run through LM Studio.
 
 This repository is a measuring instrument. Changes that would be ordinary improvements
 elsewhere can silently invalidate the benchmark here, so read the way of working before

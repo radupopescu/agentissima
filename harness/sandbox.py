@@ -70,10 +70,20 @@ class Sandbox:
     # --- path handling ------------------------------------------------------
 
     def _resolve(self, path: str) -> Path | str:
-        """Resolve a relative path inside the root, or return an error string."""
+        """Resolve a path inside the root, or return an error string.
+
+        A leading ``/`` is root-anchored *within the sandbox*, as under chroot:
+        the root is the model's entire visible filesystem, so "relative to the
+        root" and "absolute from the root" denote the same location. Without
+        this, ``root / "/x"`` discards the root (pathlib semantics), escapes to
+        the real filesystem, and is refused with a message saying the path is
+        outside the working directory — which is false, and unactionable.
+
+        ``..`` traversal is still refused, including after a leading slash.
+        """
         if not isinstance(path, str):
             return f"error: path must be a string, got {type(path).__name__}"
-        candidate = (self.root / path).resolve()
+        candidate = (self.root / path.lstrip("/")).resolve()
         try:
             candidate.relative_to(self.root)
         except ValueError:
