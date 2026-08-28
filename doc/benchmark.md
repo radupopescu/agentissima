@@ -70,15 +70,44 @@ For each configuration, the setup probe writes `configs/<id>.resolved.yaml`:
 |---|---|
 | `model_path` | LM Studio `indexedModelIdentifier` — the stable identity (see below) |
 | `model_key` | LM Studio `modelKey` at the time of the run — recorded, never relied on |
-| `model_repo`, `model_revision` | LM Studio model metadata |
-| `quant_file`, `quant_sha256` | on-disk artefact |
+| `model_repo` | LM Studio model metadata |
+| `quant_file` | on-disk artefact |
+| `quant_sha256` | on-disk artefact, **only under `--hash`**; `null` otherwise (definition below) |
 | `on_disk_bytes` | on-disk artefact |
 | `advertised_max_context` | the model's own config (`config.json` / GGUF metadata) |
-| `n_attention_layers`, `n_kv_heads`, `head_dim`, `kv_elem_bytes` | the model's own config |
+| `n_attention_layers`, `n_kv_heads`, `head_dim` | the model's own config (`config.json` / GGUF metadata) — recorded as a cross-check; nothing gates on it, see §2.2 |
+
+The probe reads metadata only and loads no model, so the whole table resolves in about twenty
+seconds, dominated by hashing the weights.
 
 **No configuration is assumed to support a context length.** A requested context greater than
 `advertised_max_context` is skipped and recorded as `unsupported` — never estimated,
 extrapolated, or silently clamped.
+
+**`quant_sha256` is the artefact-identity check, and it is optional at both ends.** It is the
+SHA-256 of the weights file on disk — the single `.gguf` for the GGUF builds,
+`model.safetensors` for the MLX builds. Path resolution prevents the wrong model being
+*loaded*; the hash catches the bytes behind a correct path having *changed* — silent
+re-download, corruption, same-name replacement — which would otherwise leave results
+attributed to a row of §2 that no longer describes what ran. A sharded artefact records a
+sorted list of `(relpath, sha256)` instead of a single hash.
+
+| | Default | Enabled by |
+|---|---|---|
+| **Computing** it at setup | off | `python -m setup.probe_config --hash` |
+| **Verifying** it at session start | on, when a hash was recorded | `capture(..., verify_hash=True)` |
+
+The two halves are independent: setup may not have hashed, and a caller may decline the
+re-hash. A configuration with no recorded hash is not a failure — it is a session that makes no
+claim about the bytes. `environment.json` records **`quant_sha256_verified`**, so a result set
+never implies a check that did not happen.
+
+Off by default because hashing is the entire cost of setup: without it the whole §2 table
+resolves in about four seconds per configuration, with it in proportion to artefact size.
+`model_path` already fixes *which* artefact a result belongs to; the hash fixes the narrower
+question of whether its bytes moved, which matters when comparing result sets recorded weeks
+apart. `model_revision` is **not recorded**: LM Studio exposes no revision, and a guessed one
+would be worse than none.
 
 > **Models are identified by path, never by LM Studio's model key.** The key is derived from
 > the set of models currently installed: LM Studio appends `@<quant>` only where one is needed
@@ -94,38 +123,77 @@ extrapolated, or silently clamped.
 >
 > The harness therefore takes a path, resolves it to a key against `lms ls --json` requiring a
 > unique exact match, and after loading **verifies the resident artefact by path**. Ambiguous
-> or unknown identifiers are refused before the CLI is invoked. `quant_sha256` remains the
-> final check on artefact identity; path resolution is what prevents loading the wrong one in
-> the first place.
+> or unknown identifiers are refused before the CLI is invoked. Path resolution is what
+> prevents loading the wrong artefact; `quant_sha256`, when enabled, is what detects the right
+> one having changed underneath.
 
 ### 2.2 Memory admissibility
 
-KV-cache size is computed per configuration and context, not guessed:
+A `(configuration, context)` pair is **admissible** when the machine can actually run it. That
+is decided as cheaply as each backend allows — and the two backends allow different things.
 
-```
-kv_bytes = 2 × n_attention_layers × n_kv_heads × head_dim × context_len × kv_elem_bytes
-```
+> **Context is allocated differently.** llama.cpp commits the KV cache eagerly, sized to the
+> declared context, at load. MLX allocates it lazily, on first touch, sized to the actual
+> sequence. Measured on one machine, same model, same context, immediately after load with no
+> inference:
+>
+> | Configuration | resident after load |
+> |---|---|
+> | BON-G2, llama.cpp @ 64K | **11.22 GiB** — 2.15 weights + ~9 GiB of KV, committed |
+> | BON-M2, MLX @ 64K | **2.16 GiB** — weights only |
 
-The factor 2 covers keys and values.
+The two consequences are not symmetric:
 
-> **LFM2-family caveat.** LFM2 architectures interleave convolutional blocks with attention
-> blocks. `n_attention_layers` is **not** the total layer count and must be read from the model
-> config. Using the total layer count materially overestimates KV cache.
+| | llama.cpp | MLX |
+|---|---|---|
+| Does the load reveal whether it fits? | **Yes** — a load that cannot hold its KV fails | **No** — the load succeeds at any declared context |
+| Pre-flight gate possible? | Yes, and exact | **No, in principle** |
 
-A `(configuration, context)` pair is **admissible** when:
+So admissibility is settled in three places, cheapest first:
 
-```
-on_disk_bytes + kv_bytes + 2 GiB headroom ≤ total_unified_memory
-```
+1. **`context_len > advertised_max_context`** → `unsupported`. Free, from recorded metadata
+   (§2.1). Skipped and recorded, never clamped or estimated.
+2. **The load attempt** → a memory refusal is `oversized`. This costs nothing extra, because
+   the stage must load the model anyway. It is exact for llama.cpp and silent for MLX.
+3. **Measurement during the run** — `peak_memory_bytes` and `swap_flag` (§5.2). For a lazily
+   allocating runtime this is the *only* honest answer, and it is a record of what happened
+   rather than a prediction of what might.
+
+A `(configuration, context)` pair that is legal by (1) and loads under (2) is run. Whether it
+was comfortable is then a measurement, not a forecast.
+
+> **Rejected: an arithmetic gate.** An earlier revision computed
+>
+> ```
+> kv_bytes = 2 × n_attention_layers × n_kv_heads × head_dim × context_len × kv_elem_bytes
+> ```
+>
+> and refused a pair when `on_disk_bytes + kv_bytes + 2 GiB headroom > total_unified_memory`,
+> with `kv_elem_bytes` obtained from a multi-minute per-configuration footprint probe. It was
+> abandoned for three reasons, in increasing order of seriousness:
+>
+> 1. **It was expensive** — roughly fifteen minutes of model loading to produce numbers that
+>    gate a decision, and that are never reported as a result.
+> 2. **It could not be made correct for both runtimes.** A probe over declared context is blind
+>    to MLX (it reported 0.058 and 0.0005 bytes per KV element — a cache of essentially zero,
+>    which passed at every context); a probe over prompt length is blind to llama.cpp and
+>    contaminated by prefill working set on MLX, reading ~3× high.
+> 3. **Its errors ran in the damaging direction.** Over-estimating excludes a runnable pair,
+>    and the exclusion is recorded but the data never exists. The prompt-length variant marked
+>    BON-M2 `oversized` at 32K and 64K on a 16 GiB machine, while BON-G2 — the same model, same
+>    geometry — stayed admissible. That would have deleted the runtime comparison of §1 for
+>    Ternary-Bonsai at those contexts. The verdict was wrong: BON-M2 loads at 64K in 7.5 s.
+>
+> Under-estimating, by contrast, is recoverable: the run proceeds, and `swap_flag` catches it.
+>
+> Geometry is still recorded (§2.1) and the formula above remains valid as a **cross-check** on
+> measured figures — the GGUF configurations agree with it to three decimal places, at 2.0
+> bytes per element — but nothing gates on it.
 
 `total_unified_memory` is read from the machine at setup (`sysctl hw.memsize`) and recorded in
-`environment.json`. It is never hardcoded: the protocol is machine-independent, but any given
-**result set is not**. Admissibility, peak memory and swap behaviour all depend on the host, so
-results from machines with different memory are not comparable and must not be pooled.
-
-Inadmissible pairs are skipped and recorded as `oversized`. The 2 GiB headroom covers the
-runtime, activations and OS working set. It is a deliberate margin, not a measurement, and
-§9 records whether it held once real peak-memory figures exist.
+`environment.json`. The protocol is machine-independent, but any given **result set is not**:
+peak memory and swap behaviour depend on the host, so results from machines with different
+memory are not comparable and must not be pooled.
 
 ---
 
@@ -144,9 +212,9 @@ config_id              §2 table ID
 model_path             LM Studio indexedModelIdentifier - stable model identity (§2.1)
 model_key              LM Studio modelKey at run time - not stable, recorded for tracing
 model_repo             model repository identifier
-model_revision         pinned revision
 quant_file             filename
-quant_sha256           SHA-256 of the artefact
+quant_sha256           SHA-256 of the artefact, or null if setup did not hash it
+quant_sha256_verified  whether it was re-checked at session start (§2.1)
 context_length         requested context, in tokens
 sampling               full sampling parameter block (§4.2)
 harness_git_sha        benchmark repository revision
@@ -168,7 +236,8 @@ The harness refuses to run unless all hold:
 - On AC power.
 - Low Power Mode disabled.
 - No model other than the one under test is loaded in LM Studio.
-- Free-memory floor satisfied (recorded, and checked against the §2.2 admissibility figure).
+- Free memory recorded (`free_memory_bytes`), for diagnosis rather than as a gate — §2.2 no
+  longer computes a figure to check it against.
 
 A failed precondition **aborts the session**. It is never downgraded to a warning.
 

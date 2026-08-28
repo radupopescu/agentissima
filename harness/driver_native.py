@@ -25,6 +25,10 @@ WALL_CLOCK_LIMIT_S = 600.0
 IDENTICAL_CALL_LIMIT = 3
 MALFORMED_CALL_LIMIT = 5
 
+# §11: any change to the loop bumps this, and that invalidates comparison with
+# earlier results. Recorded per session in environment.json.
+DRIVER_VERSION = "1"
+
 
 @dataclass
 class NativeDriver:

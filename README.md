@@ -121,12 +121,14 @@ interfaces new code must fit.
 
 ## Running the benchmark, once built
 
-Recorded here so the intended workflow is clear. None of this works today.
+Recorded here so the intended workflow is clear. Configuration resolution works today
+(`setup.probe_config`); the stage runner and reporting below do not.
 
 ```sh
-# One-off, per machine
-.venv/bin/python -m setup.probe_process              # discover the inference process name
-.venv/bin/python -m setup.probe_config  --config LFM-M8
+# One-off, per machine. Metadata only, no model loaded (§2.1).
+.venv/bin/python -m setup.probe_config                # every §2 configuration
+.venv/bin/python -m setup.probe_config --only LFM-M8   # a single one
+.venv/bin/python -m setup.probe_config --hash          # also pin artefact bytes (§2.1)
 
 # Per configuration
 .venv/bin/python -m harness.stages stage0  --config LFM-M8

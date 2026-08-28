@@ -187,6 +187,9 @@ repetitions and the `flaky` flag are load-bearing rather than ceremonial.
 | **A leading `/` escaped the sandbox and was refused as "outside working directory"** — false, since the file is inside. Turn logging showed LFM-M8 run `ls -la`, see `AGENTS.md`, be told `/AGENTS.md` was outside, and thrash for ten turns | Leading `/` is root-anchored within the sandbox; `..` still refused (§4.6). **Cost every LFM configuration the whole of T01** |
 | **Peak memory was not comparable across runtimes.** llama.cpp `mmap`s its weights into clean pages, which `phys_footprint` excludes (227 MB for a 2.87 GB artefact); MLX allocates dirty GPU buffers, which RSS excludes (707 MB for a 2.88 GB artefact). Each metric is blind to one runtime | Dirty + clean from `footprint -p` counts both (§5.2). A system-wide `vm_stat` delta was tried first and rejected: unbiased, but 1.54-2.82 GiB across six runs of one configuration |
 | **Model identity was tied to LM Studio's `modelKey`, which is not stable.** The key is derived from the installed set (`@<quant>` appended only to disambiguate), and `lms load` matches it as a *substring*: `lms load lfm2.5-2.6b` matches four artefacts and under `--yes` loads the first — an MLX build — warning only on stdout, which the harness discarded on success | Models are identified by path; `resolve()` requires a unique exact match before the CLI is invoked, and the resident artefact is verified by path after load (§2.1) |
+| **The GGUF metadata reader could not read either artefact.** Reads were not bounds-checked — only the 4-byte value type was — so any string or array straddling a 1 MB chunk boundary failed on a valid file; the alignment retry then walked the whole 2.3 GB artefact to EOF, at `buf += chunk` (quadratic). Minutes per file, then failure | Every read goes through `ensure()`, with plausibility bounds on string and array lengths so a misaligned decode fails immediately. `bytearray.extend` replaces the concatenation. Both artefacts now parse in 0.4 s |
+| **`n_kv_heads` read as 0 for every LFM2 GGUF**, blocking all three GGUF configurations. `attention.head_count_kv` is a **per-layer array** there — `[0, 0, 8, 0, 0, 8, ...]`, zero for each conv block — and the reader took element 0 | Arrays are preserved and the distinct non-zero value taken (§2.2 caveat). GGUF and MLX geometry now agree independently: LFM 8/8/64, Bonsai 36/8/128 |
+| **KV probe measured nothing for MLX.** It varied *declared* context, which llama.cpp allocates to at load but MLX does not — MLX allocates on first touch, sized to the sequence, and the warm-up was 2 tokens. Reported 0.058 and 0.0005 bytes/element, i.e. a 0.00 GiB KV cache that **passed admissibility at every context**, silently | Two slopes, larger wins: declared context (eager) and prompt length (lazy). A geometry cross-check now refuses any measurement implying <0.25 or >8 bytes/element, so this failure mode is loud (§2.2) |
 
 ---
 
@@ -260,16 +263,44 @@ model.
 `configs/*.yaml`
 
 - `probe_config.py` writes `configs/<id>.resolved.yaml` with every §2.1 field. Attention
-  geometry comes from the model's own config — remember the LFM2 caveat that
-  `n_attention_layers` is not the total layer count.
-- KV admissibility function per §2.2, with a unit test against hand-computed numbers.
-  Returns `admissible` / `unsupported` / `oversized`.
-- `probe_process.py` discovers the LM Studio inference process name; it differs between MLX and
-  llama.cpp backends and must never be hardcoded.
+  geometry for GGUF builds comes from the `gguf` package (now in `pyproject.toml`); MLX
+  builds read `config.json`. The LFM2 caveat is concrete and testable: LFM2.5-2.6B has 30
+  hidden layers of which only 8 are `full_attention` — count occurrences in `layer_types`,
+  never `num_hidden_layers`. Caveat: Bonsai's custom `Q2_0_g64` quant (GGML type 42)
+  crashes `gguf`'s tensor parse with no skip option, so a minimal metadata-only GGUF header
+  parser is the fallback for files the library cannot open — it reads the same fields and
+  stops before the tensor section.
+- **No KV runtime probe.** An earlier design measured `kv_elem_bytes` by loading each
+  configuration at two context lengths, or two prompt lengths, and dividing a footprint delta
+  by a token delta. It was tried, cost ~15 minutes across the six configurations, and was
+  abandoned: llama.cpp allocates KV eagerly at load but MLX allocates lazily on first touch, so
+  no single probe design measured both correctly, and the errors ran in the damaging
+  direction — an MLX measurement of essentially zero passed admissibility at every context,
+  while an over-estimate would have marked BON-M2 `oversized` at 32K/64K although it loads
+  fine. See §2.2 for the replacement and the full account.
+- `probe_config.py` therefore reads metadata only and loads no model: the whole §2 table
+  resolves in seconds. Geometry (`n_attention_layers`, `n_kv_heads`, `head_dim`) is still
+  extracted as a cross-check, never as an admissibility input.
+- `quant_sha256`: SHA-256 of the weights file — `.gguf` for GGUF builds, `model.safetensors`
+  for these MLX builds; a sharded artefact records a sorted `(relpath, sha256)` list.
+  `model_revision` is dropped from the schema — LM Studio does not expose it. **Optional at
+  both ends** (§2.1): off by default at setup (`--hash` to enable — it is otherwise the whole
+  cost of resolving a configuration) and skipped at session start when no hash was recorded.
+  `environment.json` records `quant_sha256_verified` so a result set never implies a check
+  that did not run.
+- Admissibility per §2.2 is now three cheap checks, not one arithmetic function: recorded
+  metadata rules out `unsupported`, the load attempt itself is `oversized` on a memory
+  refusal (exact for llama.cpp, silent for MLX by construction), and `peak_memory_bytes` /
+  `swap_flag` from §5.2 are the record of what a run actually cost. `harness/admissibility.py`
+  holds `classify_declared` and `classify_load_failure`, both covered by unit tests.
+- `probe_process.py` does **not** re-implement process discovery: refactor `metrics.py`'s
+  hint-and-footprint search (§5.2) into a shared helper, then use it here to name the
+  resident inference process and derive `backend_runtime` (name + version) from its command
+  line for `environment.json`. One discovery implementation lives in the codebase.
 - `environment.py` emits `environment.json` and asserts the §3.1 preconditions: AC power
-  (`pmset -g batt`), Low Power Mode off (`pmset -g`), exactly one model loaded (`GET /v1/models`
-  plus whatever LM Studio exposes for loaded state), swap baseline recorded. **A failed
-  precondition aborts the session** — no warnings.
+  (`pmset -g batt`), Low Power Mode off (`pmset -g`), exactly one model loaded (`GET
+  /v1/models` plus `lms ps`), swap baseline recorded. **A failed precondition aborts the
+  session** — no warnings.
 
 ### M4 — Stage 0 tasks, results output, stage runner (§9, §10.1)
 
@@ -346,7 +377,8 @@ Not blockers, but each needs an answer recorded in `benchmark.md` when resolved.
 | Can `lms` set context length at load time? | Determines whether stages can run unattended across configurations |
 | ~~Do all six quantisations actually exist?~~ | **Resolved:** all six exist and all six now load. See §3a |
 | ~~How should peak memory be measured?~~ | **Resolved:** dirty + clean from `footprint -p`. Each runtime puts the weights where one standard metric cannot see them — llama.cpp in clean mapped-file pages (invisible to `phys_footprint`), MLX in dirty GPU buffers (invisible to RSS). Summing both columns counts both. Spread 0.03 GiB over three repetitions, against 1.28 GiB for the system-wide delta it replaced. See §5.2 |
-| Does the 2 GiB headroom in §2.2 hold in practice? | It is a stated margin, not a measurement. Worth checking against observed peak memory once Stage 1 has run. First figures: llama.cpp Q8_0 2.90-2.93 GiB, MLX 8-bit 4.18 GiB, both at 8K on W05 |
+| ~~Does the 2 GiB headroom in §2.2 hold in practice?~~ | **Moot.** §2.2 dropped the arithmetic margin entirely — admissibility is now a metadata check, a load attempt, and §5.2 measurement, so there is no headroom figure left to validate. First real peak-memory figures: llama.cpp Q8_0 2.90-2.93 GiB, MLX 8-bit 4.18 GiB, both at 8K on W05 |
+| Do LM Studio's memory-refusal error messages match `classify_load_failure`'s patterns? | **Untested against a real refusal.** No §2 pair on this 16 GiB machine actually triggers `oversized`; the string patterns ("out of memory", "failed to allocate", "guardrail", …) are unit-tested against assumed wording only. A real refusal with different phrasing surfaces as a plain `LMStudioError` rather than `oversized` — loud, but mislabelled. Capture the actual message the first time a stage hits one |
 
 ---
 

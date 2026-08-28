@@ -16,11 +16,18 @@ import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+from .admissibility import OVERSIZED, classify_load_failure
+
 LMS = "lms"
 
 
 class LMStudioError(RuntimeError):
     pass
+
+
+class ModelOversizedError(LMStudioError):
+    """The load was refused for memory. §2.2's `oversized`, discovered the only
+    way it reliably can be: by attempting it."""
 
 
 def _run(args: list[str], timeout: float = 300.0) -> subprocess.CompletedProcess:
@@ -54,6 +61,7 @@ class Artefact:
     model_key: str
     path: str
     size_bytes: int | None = None
+    format: str | None = None
     architecture: str | None = None
     quantization: str | None = None
     max_context_length: int | None = None
@@ -65,6 +73,7 @@ class Artefact:
             model_key=payload.get("modelKey", ""),
             path=payload.get("indexedModelIdentifier") or payload.get("path", ""),
             size_bytes=payload.get("sizeBytes"),
+            format=payload.get("format"),
             architecture=payload.get("architecture"),
             quantization=quant.get("name") if isinstance(quant, dict) else quant,
             max_context_length=payload.get("maxContextLength"),
@@ -174,10 +183,16 @@ def load(
 
     completed = _run(args, timeout=timeout)
     if completed.returncode != 0:
-        raise LMStudioError(
-            f"lms load {artefact.path} failed: "
-            f"{(completed.stderr or completed.stdout).strip()}"
-        )
+        detail = (completed.stderr or completed.stdout).strip()
+        # A load that cannot hold its KV cache is the §2.2 `oversized` verdict,
+        # not a harness fault. Only on backends that commit KV at load: MLX
+        # allocates lazily and will load at any declared context.
+        if classify_load_failure(detail) == OVERSIZED:
+            raise ModelOversizedError(
+                f"{artefact.path} does not fit at context {context_length}: "
+                f"{detail}"
+            )
+        raise LMStudioError(f"lms load {artefact.path} failed: {detail}")
 
     resident = list_loaded()
     for loaded_model in resident:
