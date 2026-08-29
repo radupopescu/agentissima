@@ -7,4 +7,4 @@ that must bump it.
 
 from __future__ import annotations
 
-TASK_SET_VERSION = "v2"
+TASK_SET_VERSION = "v3"

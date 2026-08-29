@@ -14,6 +14,7 @@ import pytest
 
 from harness import environment, lmstudio
 from harness.environment import PreconditionError, SessionEnvironment
+from harness.version import TASK_SET_VERSION
 
 
 def _resolved() -> dict:
@@ -73,7 +74,7 @@ def test_capture_writes_a_complete_environment(happy_machine, tmp_path, monkeypa
     assert payload["lmstudio_version"] == "0.4.21"
     assert payload["driver"] == "native"
     assert payload["driver_version"] == "1"
-    assert payload["task_set_version"] == "v2"
+    assert payload["task_set_version"] == TASK_SET_VERSION
     assert payload["ac_power"] is True
     assert payload["low_power_mode"] is False
     assert payload["swap_used_bytes_start"] == 1024

@@ -1,9 +1,10 @@
 # Local LLM Agent Benchmark
 
-**Task set version:** `v2`. See §11 for what invalidates results.
+**Task set version:** `v3`. See §11 for what invalidates results.
 
 | Version | Change |
 |---|---|
+| `v3` | `run_command` sandboxing fixed: absolute paths and `..` no longer reach the real filesystem, `&` backgrounding no longer bypasses the allowlist, and a timed-out command's children are actually killed (§4.6). Changes tool behaviour, so `v2` results are not comparable |
 | `v2` | Leading `/` is root-anchored within the sandbox (§4.6). Changes tool behaviour, so `v1` results are not comparable |
 | `v1` | Initial task set |
 

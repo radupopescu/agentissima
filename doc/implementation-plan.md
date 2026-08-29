@@ -47,7 +47,7 @@ The harness half runs with no model and no network (162 tests):
 > produced its timings cannot now be established, so they have been dropped. This is the §2.1
 > identifier defect appearing in the project's own records, and the reason paths replaced keys.
 
-Five defects that only a real model exposed, now fixed and covered by tests:
+Six defects that only a real model exposed, now fixed and covered by tests:
 
 | Defect | Fix |
 |---|---|
@@ -56,6 +56,7 @@ Five defects that only a real model exposed, now fixed and covered by tests:
 | `max_tokens=1` made LM Studio finish without emitting a token delta, so overhead calibration silently returned 0.0 and prompt tok/s went unadjusted | `max_tokens=8`; no timed sample now fails loudly (§5.1) |
 | W01 failed a *correct* answer that named £85 and identified £72 as superseded | The decoy may appear if marked superseded (§7.1) |
 | An uncaught `openai.APIError` crashed the whole process on a backend 500 mid-stream, during a live Stage 2A run against LFM-GQ4. Root cause: an LM Studio developer setting — see `findings.md` | `NativeDriver` catches `APIError` and ends just that run with a new `server_error` termination reason (§4.8), instead of crashing the stage |
+| **`run_command` was not actually sandboxed.** A live Stage 2A run against LFM-GQ4 issued `grep -r expense /` and `find / ...` (allowed command names, absolute-path arguments), which reached the real filesystem — `run_command` has no structured path parameter, so the leading-`/` root-anchoring the other tools apply never applied here. Its 30s timeout also killed only the top-level shell, not what it forked, so several `grep`/`find` processes kept scanning the real disk for over an hour after being "killed" — found only because they were still running and visibly consuming CPU. A bare `&` also bypassed the allowlist entirely (`wc -l a.txt & sleep 5` only checked `wc`) | Absolute paths, `~`, and `..` in any argument are refused (`_escapes_sandbox`); `&` is now a segment boundary like `;`/`&&`/`\|`; the subprocess runs in its own process group (`start_new_session=True`) and a timeout kills the whole group (`os.killpg`), not just the shell (§4.6). Bumped `task_set_version` to `v3` — this changes what a model observes from `run_command`. All results collected before this fix are invalidated and were re-collected |
 
 ### Not built
 

@@ -57,7 +57,15 @@ anything that should not be belongs elsewhere.
 
 ## 2026-08-29 — LFM-GQ4 never tries the one permitted `run_command` command
 
-**What happened.** In the clean Stage 2A run, LFM-GQ4 passed the four tasks solvable by
+**Superseded.** The run this entry describes was collected under `task_set_version: v2`, before
+a `run_command` sandboxing bug was fixed (`implementation-plan.md`'s defect table) — absolute
+paths reached the real filesystem, and the model used this on task W06 (`grep -r expense /`,
+`find / ...`), which is not reflected in the W02/W03/W09/W10 pattern below. That pattern itself
+came from calls the allowlist correctly blocked before reaching a shell (`cd`, `python3`, `awk`),
+so it is probably still accurate, but needs confirming against a `v3` re-run before it is
+trusted as a result. Left here for now, superseded once that re-run exists.
+
+**What happened.** In this run, LFM-GQ4 passed the four tasks solvable by
 retrieval alone (`read_file`/`list_files`/`search_files`: W01, W04, W05, W08) and failed the
 four that need computed aggregation over CSV data (W02, W03, W09, W10).
 
