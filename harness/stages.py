@@ -1,9 +1,12 @@
 """Stage runner (doc/benchmark.md §9).
 
 Loads a model once, runs a set of tasks across repetitions, and writes §10.1
-JSONL records — the load/unload discipline of §9.0, generalised so Stage
-2A/2B/3/4 are just a different task list and repetition count later, not new
-code.
+JSONL records — the load/unload discipline of §9.0, generalised so most of
+§9's stages are a different task list, repetition count and context, not new
+code: `run_stage()` backs Stage 0/2A/2B/3 and Stage 5B's compaction variant.
+Stage 1 is raw inference rather than task-based, so it has its own inner
+loop (`run_stage1()`), but shares the same load/capture/resume preamble via
+`_model_session()`.
 
 Session identity is deterministic (`<config_id>-<context_length>`, no
 timestamp), so re-running the same stage command lands in the same session
@@ -20,6 +23,16 @@ understate a configuration that is otherwise capable at a context it hasn't
 been given (§9 Stage 4's "larger context is not assumed to be better" cuts
 both ways: a task also should not be penalised for a context it wasn't run
 at).
+
+`run_full()` sequences Stage 0 through Stage 3 for one configuration and
+stops there. Stage 4 is deliberately not automated: its trigger ("only where
+Stage 3 showed failures attributable to context limits") is a judgement
+about failure *cause*, not a mechanical threshold like Stage 0/2A's gates,
+and §9.2 calls each gate "an explicit go/no-go decision point, not a
+formality" — automating past Stage 3 would be exactly that. Stage 5A needs
+the `pi` driver (not built). Stage 5B is a separate, standalone experiment
+(`run_stage5b_compact()`) that never feeds the controlled comparison, so it
+is not part of `run_full()` either.
 """
 
 from __future__ import annotations
@@ -27,6 +40,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,21 +50,28 @@ from . import environment, lmstudio, results
 from .admissibility import UNSUPPORTED, classify_declared
 from .client import LMStudioClient
 from .driver_native import NativeDriver
-from .metrics import MemorySampler, SwapWindow, find_inference_pid
+from .metrics import MemorySampler, SwapWindow, find_inference_pid, nonce_prefix, turn_metrics
 from .runner import run_task
-from .tasks import SUITE_W
+from .tasks import SUITE_T, SUITE_W
 from .tasks.smoke import STAGE0_TASKS
 from .types import Task
 from .version import TASK_SET_VERSION
 
 RESULTS_DIR = Path("results")
 STAGE_IDENTIFIER = "bench"
+PROMPTS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "prompts"
 
 # §9 Stage 0: "fewer than 2 of 3 valid tool calls" for 3 tasks × 3 repetitions
 # (9 runs) is read as an aggregate rate, not a per-task count — see
 # doc/benchmark.md §9 Stage 0 for the reasoning.
 STAGE0_REPETITIONS = 3
 STAGE0_GATE_RATE = 2 / 3
+
+# 3 repetitions per task for every agent stage past Stage 0 (§9 Stage
+# 2A/2B; Stage 3 doesn't restate it, but nothing suggests a different
+# methodology there, so the same figure is used and documented in
+# benchmark.md).
+AGENT_REPETITIONS = 3
 
 # §9 Stage 2A: "passes ≥3 of 10 on Suite W or has a mean progress score
 # ≥2.5" over 3 repetitions per task. Neither half of that OR says how 3
@@ -60,15 +83,29 @@ STAGE0_GATE_RATE = 2 / 3
 # per-task mean of means — with uniform repetitions per task the two
 # coincide, and this is simpler when they don't. See doc/benchmark.md §9
 # Stage 2A for the recorded reasoning.
-STAGE2A_REPETITIONS = 3
 STAGE2A_MIN_PASSES = 3
 STAGE2A_MIN_MEAN_PROGRESS = 2.5
+
+# §9 Stage 1: 8K/16K tiers, 5 repetitions, a repetition counts only if
+# completion_tokens >= 128 or is retried once with the alternate prompt.
+STAGE1_CONTEXT = {"8k": 8192, "16k": 16384}
+STAGE1_REPETITIONS = 5
+STAGE1_MIN_COMPLETION_TOKENS = 128
+
+# §9 Stage 5B's context-compaction experiment.
+STAGE5B_REPETITIONS = AGENT_REPETITIONS
 
 
 class SessionMismatchError(RuntimeError):
     """A resumed session's raw records were written under a different
     `task_set_version` than the one running now. Refuses to pool them
     silently."""
+
+
+class UnsupportedContextError(RuntimeError):
+    """Raised by `_model_session` before any load is attempted: the
+    configuration's advertised maximum context is below what was requested
+    (§2.2's `unsupported`)."""
 
 
 @dataclass
@@ -100,6 +137,17 @@ class Stage2AOutcome:
     stage: StageOutcome
 
 
+@dataclass
+class FullRunOutcome:
+    config_id: str
+    stopped_reason: str | None = None
+    stage0: Stage0Outcome | None = None
+    stage1: dict[str, StageOutcome] = field(default_factory=dict)
+    stage2a: Stage2AOutcome | None = None
+    stage2b: StageOutcome | None = None
+    stage3: dict[str, StageOutcome] = field(default_factory=dict)
+
+
 def _check_task_set_version_matches(raw_path: Path) -> None:
     """§11: a `task_set_version` bump is what marks results incomparable —
     covering a fixture, task, prompt, tool schema, sandbox limit or driver
@@ -121,6 +169,91 @@ def _check_task_set_version_matches(raw_path: Path) -> None:
             )
 
 
+@dataclass
+class ModelSession:
+    """One load/unload bracket (§9.0): everything a stage needs once the
+    model is resident, shared by every stage runner via `_model_session()`."""
+
+    session_id: str
+    session_dir: Path
+    raw_path: Path
+    transcripts_dir: Path
+    env: environment.SessionEnvironment
+    client: LMStudioClient
+    overhead: float
+    pid: int | None
+    existing: set[tuple]
+
+
+@contextmanager
+def _model_session(
+    config_id: str,
+    stage_name: str,
+    context_length: int,
+    *,
+    results_dir: Path,
+    configs_dir: Path | None,
+    verify_hash: bool,
+) -> Iterator[ModelSession]:
+    """Load `config_id` once, capture the environment, and yield everything a
+    stage loop needs. Raises `UnsupportedContextError` before any load is
+    attempted, or lets `lmstudio.ModelOversizedError` propagate from the load
+    itself — both are for the caller to turn into a `StageOutcome`, since
+    Stage 0/2A/etc. and Stage 1 want that outcome shaped slightly
+    differently.
+    """
+    resolved = environment.load_resolved(config_id, configs_dir)
+    if classify_declared(resolved["advertised_max_context"], context_length) == UNSUPPORTED:
+        raise UnsupportedContextError(
+            f"{config_id} advertises a maximum context of "
+            f"{resolved['advertised_max_context']}, below the requested "
+            f"{context_length}"
+        )
+
+    session_id = f"{config_id}-{context_length}"
+    session_dir = Path(results_dir) / session_id
+    raw_path = session_dir / "raw" / f"{stage_name}.jsonl"
+    transcripts_dir = session_dir / "transcripts"
+
+    with lmstudio.loaded(
+        resolved["model_path"],
+        context_length=context_length,
+        identifier=STAGE_IDENTIFIER,
+    ):
+        env = environment.capture(
+            config_id,
+            context_length,
+            driver="native",
+            out_dir=results_dir,
+            configs_dir=configs_dir,
+            verify_hash=verify_hash,
+            session_id=session_id,
+        )
+
+        existing = results.existing_keys(raw_path)
+        if existing:
+            _check_task_set_version_matches(raw_path)
+
+        client = LMStudioClient(model=STAGE_IDENTIFIER)
+        overhead = client.measure_overhead()
+        # After overhead calibration: MLX allocates lazily and is not yet
+        # identifiable immediately after load (§5.2 defect note).
+        found = find_inference_pid()
+        pid = found[0] if found else None
+
+        yield ModelSession(
+            session_id=session_id,
+            session_dir=session_dir,
+            raw_path=raw_path,
+            transcripts_dir=transcripts_dir,
+            env=env,
+            client=client,
+            overhead=overhead,
+            pid=pid,
+            existing=existing,
+        )
+
+
 def _record_for(
     task: Task,
     repetition: int,
@@ -131,6 +264,7 @@ def _record_for(
     environment_sha256: str,
     context_length: int,
     driver: NativeDriver,
+    driver_label: str,
     pid: int | None,
     transcripts_dir: Path,
 ) -> dict:
@@ -155,7 +289,7 @@ def _record_for(
         "run_id": run_id,
         "session_id": session_id,
         "config_id": config_id,
-        "driver": "native",
+        "driver": driver_label,
         "suite": suite,
         "task_id": task.id,
         "repetition": repetition,
@@ -199,53 +333,20 @@ def run_stage(
     results_dir: Path = RESULTS_DIR,
     configs_dir: Path | None = None,
     verify_hash: bool = True,
+    history_mode: str = "full",
+    driver_label: str = "native",
 ) -> StageOutcome:
     """Run `tasks` × `repetitions` against `config_id` at `context_length`,
     loading the model once (§9.0) and writing §10.1 records as they complete.
     """
-    resolved = environment.load_resolved(config_id, configs_dir)
-    if classify_declared(resolved["advertised_max_context"], context_length) == UNSUPPORTED:
-        return StageOutcome(
-            status="unsupported",
-            detail=(
-                f"{config_id} advertises a maximum context of "
-                f"{resolved['advertised_max_context']}, below the requested "
-                f"{context_length}"
-            ),
-        )
-
-    session_id = f"{config_id}-{context_length}"
-    session_dir = Path(results_dir) / session_id
-    raw_path = session_dir / "raw" / f"{stage_name}.jsonl"
-    transcripts_dir = session_dir / "transcripts"
-
     try:
-        with lmstudio.loaded(
-            resolved["model_path"],
-            context_length=context_length,
-            identifier=STAGE_IDENTIFIER,
-        ):
-            env = environment.capture(
-                config_id,
-                context_length,
-                driver="native",
-                out_dir=results_dir,
-                configs_dir=configs_dir,
-                verify_hash=verify_hash,
-                session_id=session_id,
+        with _model_session(
+            config_id, stage_name, context_length,
+            results_dir=results_dir, configs_dir=configs_dir, verify_hash=verify_hash,
+        ) as session:
+            driver = NativeDriver(
+                client=session.client, overhead_s=session.overhead, history_mode=history_mode
             )
-
-            existing = results.existing_keys(raw_path)
-            if existing:
-                _check_task_set_version_matches(raw_path)
-
-            client = LMStudioClient(model=STAGE_IDENTIFIER)
-            overhead = client.measure_overhead()
-            # After overhead calibration: MLX allocates lazily and is not yet
-            # identifiable immediately after load (§5.2 defect note).
-            found = find_inference_pid()
-            pid = found[0] if found else None
-            driver = NativeDriver(client=client, overhead_s=overhead)
 
             skipped_min_context = [
                 task.id for task in tasks if task.min_context > context_length
@@ -256,31 +357,54 @@ def run_stage(
                     continue
                 for repetition in range(1, repetitions + 1):
                     key = (config_id, suite, task.id, repetition)
-                    if key in existing:
+                    if key in session.existing:
                         continue
                     record = _record_for(
                         task,
                         repetition,
                         config_id=config_id,
                         suite=suite,
-                        session_id=session_id,
-                        environment_sha256=env.sha256,
+                        session_id=session.session_id,
+                        environment_sha256=session.env.sha256,
                         context_length=context_length,
                         driver=driver,
-                        pid=pid,
-                        transcripts_dir=transcripts_dir,
+                        driver_label=driver_label,
+                        pid=session.pid,
+                        transcripts_dir=session.transcripts_dir,
                     )
-                    results.append_record(raw_path, record)
+                    results.append_record(session.raw_path, record)
+    except UnsupportedContextError as exc:
+        return StageOutcome(status="unsupported", detail=str(exc))
     except lmstudio.ModelOversizedError as exc:
         return StageOutcome(status="oversized", detail=str(exc))
 
     return StageOutcome(
         status="completed",
-        session_dir=session_dir,
-        raw_path=raw_path,
-        records=results.read_records(raw_path),
+        session_dir=session.session_dir,
+        raw_path=session.raw_path,
+        records=results.read_records(session.raw_path),
         skipped_min_context=skipped_min_context,
     )
+
+
+def _evaluate_stage0(stage: StageOutcome) -> Stage0Outcome:
+    """The Stage 0 gate's pure arithmetic — separated so `harness/report.py`
+    can recompute it from raw JSONL (`stage0_gate`) without a live run,
+    exactly as `_evaluate_stage2a` does for Stage 2A."""
+    if stage.status != "completed":
+        return Stage0Outcome(tool_capable=False, valid_runs=0, total_runs=0, stage=stage)
+
+    total = len(stage.records)
+    valid = sum(1 for r in stage.records if r["tool_calls"] - r["invalid_calls"] > 0)
+    tool_capable = total > 0 and (valid / total) >= STAGE0_GATE_RATE
+    return Stage0Outcome(
+        tool_capable=tool_capable, valid_runs=valid, total_runs=total, stage=stage
+    )
+
+
+def stage0_gate(records: list[dict]) -> Stage0Outcome:
+    """The Stage 0 gate over records already on disk (`harness/report.py`)."""
+    return _evaluate_stage0(StageOutcome(status="completed", records=records))
 
 
 def run_stage0(
@@ -300,15 +424,7 @@ def run_stage0(
         results_dir=results_dir,
         configs_dir=configs_dir,
     )
-    if stage.status != "completed":
-        return Stage0Outcome(tool_capable=False, valid_runs=0, total_runs=0, stage=stage)
-
-    total = len(stage.records)
-    valid = sum(1 for r in stage.records if r["tool_calls"] - r["invalid_calls"] > 0)
-    tool_capable = total > 0 and (valid / total) >= STAGE0_GATE_RATE
-    return Stage0Outcome(
-        tool_capable=tool_capable, valid_runs=valid, total_runs=total, stage=stage
-    )
+    return _evaluate_stage0(stage)
 
 
 def _task_passed_by_majority(records: list[dict]) -> bool:
@@ -348,6 +464,11 @@ def _evaluate_stage2a(stage: StageOutcome) -> Stage2AOutcome:
     )
 
 
+def stage2a_gate(records: list[dict]) -> Stage2AOutcome:
+    """The Stage 2A gate over records already on disk (`harness/report.py`)."""
+    return _evaluate_stage2a(StageOutcome(status="completed", records=records))
+
+
 def run_stage2a(
     config_id: str,
     context_length: int = 8192,
@@ -361,11 +482,249 @@ def run_stage2a(
         stage_name="stage2a",
         suite="W",
         context_length=context_length,
-        repetitions=STAGE2A_REPETITIONS,
+        repetitions=AGENT_REPETITIONS,
         results_dir=results_dir,
         configs_dir=configs_dir,
     )
     return _evaluate_stage2a(stage)
+
+
+def run_stage2b(
+    config_id: str,
+    context_length: int = 8192,
+    *,
+    results_dir: Path = RESULTS_DIR,
+    configs_dir: Path | None = None,
+) -> StageOutcome:
+    """Survivors of the Stage 2A gate only (§9 Stage 2B) — this function
+    doesn't check that itself; `run_full()` only calls it once Stage 2A has
+    proceeded."""
+    return run_stage(
+        config_id,
+        SUITE_T,
+        stage_name="stage2b",
+        suite="T",
+        context_length=context_length,
+        repetitions=AGENT_REPETITIONS,
+        results_dir=results_dir,
+        configs_dir=configs_dir,
+    )
+
+
+def run_stage3(
+    config_id: str,
+    *,
+    results_dir: Path = RESULTS_DIR,
+    configs_dir: Path | None = None,
+) -> dict[str, StageOutcome]:
+    """Both suites at 16K (§9 Stage 3), for configurations already above the
+    floor at 8K — `run_full()` only reaches this after the Stage 2A gate."""
+    outcomes = {}
+    for suite_name, tasks in (("W", SUITE_W), ("T", SUITE_T)):
+        outcomes[suite_name] = run_stage(
+            config_id,
+            tasks,
+            stage_name="stage3",
+            suite=suite_name,
+            context_length=16384,
+            repetitions=AGENT_REPETITIONS,
+            results_dir=results_dir,
+            configs_dir=configs_dir,
+        )
+    return outcomes
+
+
+def _stage1_record(
+    tier: str,
+    repetition: int,
+    *,
+    config_id: str,
+    session_id: str,
+    environment_sha256: str,
+    context_length: int,
+    client: LMStudioClient,
+    overhead: float,
+    pid: int | None,
+    primary_prompt: str,
+    alternate_prompt: str,
+) -> dict:
+    run_id = f"{config_id}-1-{tier}-r{repetition}"
+
+    def _attempt(prompt_text: str):
+        messages = [{"role": "user", "content": nonce_prefix() + "\n\n" + prompt_text}]
+        sampler = MemorySampler(pid).start() if pid is not None else None
+        started = time.monotonic()
+        with SwapWindow() as swap:
+            turn = client.stream_turn(messages, clock=time.monotonic)
+        elapsed = time.monotonic() - started
+        peak = sampler.stop() if sampler is not None else None
+        return turn, peak, swap, elapsed
+
+    turn, peak, swap, elapsed = _attempt(primary_prompt)
+    if (turn.completion_tokens or 0) < STAGE1_MIN_COMPLETION_TOKENS:
+        turn, peak, swap, elapsed = _attempt(alternate_prompt)
+
+    tm = turn_metrics(turn, overhead)
+    return {
+        "run_id": run_id,
+        "session_id": session_id,
+        "config_id": config_id,
+        "driver": "native",
+        "suite": "1",
+        "task_id": tier,
+        "repetition": repetition,
+        "environment_sha256": environment_sha256,
+        "context_length": context_length,
+        "task_set_version": TASK_SET_VERSION,
+        "ttft_s": tm.ttft_s,
+        "gen_tps": tm.gen_tps,
+        "prompt_tps": tm.prompt_tps,
+        "ttft_turn1_s": tm.ttft_s,
+        "ttft_median_later_s": None,
+        "prompt_tokens": tm.prompt_tokens,
+        "completion_tokens": tm.completion_tokens,
+        "total_tokens": (tm.prompt_tokens or 0) + (tm.completion_tokens or 0),
+        "peak_memory_bytes": peak,
+        "swap_delta_bytes": swap.delta_bytes,
+        "swap_flag": swap.flagged,
+        "steps": 1,
+        "tool_calls": 0,
+        "invalid_calls": 0,
+        "path_errors": 0,
+        # Not one of native's §4.8 termination reasons — a raw completion has
+        # no agent loop, so the model's own finish_reason is what's meaningful.
+        "termination_reason": turn.finish_reason or "unknown",
+        "passed": None,
+        "progress_score": None,
+        "flaky": None,
+        "wall_clock_s": round(elapsed, 3),
+        "transcript_path": None,
+    }
+
+
+def run_stage1(
+    config_id: str,
+    tier: str,
+    *,
+    repetitions: int = STAGE1_REPETITIONS,
+    results_dir: Path = RESULTS_DIR,
+    configs_dir: Path | None = None,
+    verify_hash: bool = True,
+) -> StageOutcome:
+    context_length = STAGE1_CONTEXT[tier]
+    primary = (PROMPTS_DIR / f"{tier}_primary.txt").read_text(encoding="utf-8")
+    alternate = (PROMPTS_DIR / f"{tier}_alternate.txt").read_text(encoding="utf-8")
+
+    try:
+        with _model_session(
+            config_id, "stage1", context_length,
+            results_dir=results_dir, configs_dir=configs_dir, verify_hash=verify_hash,
+        ) as session:
+            for repetition in range(1, repetitions + 1):
+                key = (config_id, "1", tier, repetition)
+                if key in session.existing:
+                    continue
+                record = _stage1_record(
+                    tier,
+                    repetition,
+                    config_id=config_id,
+                    session_id=session.session_id,
+                    environment_sha256=session.env.sha256,
+                    context_length=context_length,
+                    client=session.client,
+                    overhead=session.overhead,
+                    pid=session.pid,
+                    primary_prompt=primary,
+                    alternate_prompt=alternate,
+                )
+                results.append_record(session.raw_path, record)
+    except UnsupportedContextError as exc:
+        return StageOutcome(status="unsupported", detail=str(exc))
+    except lmstudio.ModelOversizedError as exc:
+        return StageOutcome(status="oversized", detail=str(exc))
+
+    return StageOutcome(
+        status="completed",
+        session_dir=session.session_dir,
+        raw_path=session.raw_path,
+        records=results.read_records(session.raw_path),
+    )
+
+
+def run_stage5b_compact(
+    config_id: str,
+    context_length: int = 8192,
+    *,
+    results_dir: Path = RESULTS_DIR,
+    configs_dir: Path | None = None,
+) -> dict[str, StageOutcome]:
+    """Stage 5B's context-compaction experiment (§9 Stage 5B): the same
+    Suite W/T tasks, run through `NativeDriver(history_mode="compact")`.
+    Written with `driver="native-compact"` to its own raw files
+    (`stage5b-compact-w.jsonl` / `-t.jsonl`) so it is never pooled with the
+    controlled comparison, even though it shares the Stage 2A/2B session."""
+    outcomes = {}
+    for suite_name, tasks in (("W", SUITE_W), ("T", SUITE_T)):
+        outcomes[suite_name] = run_stage(
+            config_id,
+            tasks,
+            stage_name=f"stage5b-compact-{suite_name.lower()}",
+            suite=suite_name,
+            context_length=context_length,
+            repetitions=STAGE5B_REPETITIONS,
+            results_dir=results_dir,
+            configs_dir=configs_dir,
+            history_mode="compact",
+            driver_label="native-compact",
+        )
+    return outcomes
+
+
+def run_full(
+    config_id: str,
+    *,
+    results_dir: Path = RESULTS_DIR,
+    configs_dir: Path | None = None,
+) -> FullRunOutcome:
+    """Stage 0 through Stage 3 for one configuration, stopping at the first
+    gate failure or stage that didn't complete. See the module docstring for
+    why this doesn't continue to Stage 4/5A/5B."""
+    outcome = FullRunOutcome(config_id=config_id)
+
+    stage0 = run_stage0(config_id, results_dir=results_dir, configs_dir=configs_dir)
+    outcome.stage0 = stage0
+    if stage0.stage.status != "completed":
+        outcome.stopped_reason = f"stage0 {stage0.stage.status}: {stage0.stage.detail}"
+        return outcome
+    if not stage0.tool_capable:
+        outcome.stopped_reason = "not tool-capable (Stage 0 gate)"
+        return outcome
+
+    for tier in STAGE1_CONTEXT:
+        # Stage 1 is a separate measurement from the agent stages; a failure
+        # here (e.g. unsupported at 16K) is recorded but does not stop the
+        # sequence.
+        outcome.stage1[tier] = run_stage1(
+            config_id, tier, results_dir=results_dir, configs_dir=configs_dir
+        )
+
+    stage2a = run_stage2a(config_id, results_dir=results_dir, configs_dir=configs_dir)
+    outcome.stage2a = stage2a
+    if stage2a.stage.status != "completed":
+        outcome.stopped_reason = f"stage2a {stage2a.stage.status}: {stage2a.stage.detail}"
+        return outcome
+    if not stage2a.proceeds:
+        outcome.stopped_reason = "failed Stage 2A gate"
+        return outcome
+
+    stage2b = run_stage2b(config_id, results_dir=results_dir, configs_dir=configs_dir)
+    outcome.stage2b = stage2b
+    if stage2b.status != "completed":
+        outcome.stopped_reason = f"stage2b {stage2b.status}: {stage2b.detail}"
+        return outcome
+
+    outcome.stage3 = run_stage3(config_id, results_dir=results_dir, configs_dir=configs_dir)
+    return outcome
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -376,9 +735,21 @@ def main(argv: list[str] | None = None) -> int:
     stage0.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
     stage0.add_argument("--context", type=int, default=8192)
 
+    stage1 = sub.add_parser("stage1", help="run §9 Stage 1: raw inference at 8K and 16K")
+    stage1.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
+
     stage2a = sub.add_parser("stage2a", help="run §9 Stage 2A: Suite W at 8K")
     stage2a.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
     stage2a.add_argument("--context", type=int, default=8192)
+
+    stage5b = sub.add_parser(
+        "stage5b-compact", help="run §9 Stage 5B's context-compaction experiment"
+    )
+    stage5b.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
+    stage5b.add_argument("--context", type=int, default=8192)
+
+    full = sub.add_parser("full", help="run Stage 0 through Stage 3 for one configuration")
+    full.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
 
     args = parser.parse_args(argv)
 
@@ -391,6 +762,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(outcome.stage.detail)
         return 1
+
+    if args.command == "stage1":
+        exit_code = 0
+        for tier in STAGE1_CONTEXT:
+            outcome = run_stage1(args.config_id, tier)
+            print(f"{tier}: status={outcome.status}")
+            if outcome.status == "completed":
+                print(f"  raw records: {outcome.raw_path}")
+            else:
+                print(f"  {outcome.detail}")
+                exit_code = 1
+        return exit_code
 
     if args.command == "stage2a":
         outcome = run_stage2a(args.config_id, context_length=args.context)
@@ -407,6 +790,41 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(outcome.stage.detail)
         return 1
+
+    if args.command == "stage5b-compact":
+        outcomes = run_stage5b_compact(args.config_id, context_length=args.context)
+        exit_code = 0
+        for suite_name, outcome in outcomes.items():
+            print(f"suite {suite_name}: status={outcome.status}")
+            if outcome.status == "completed":
+                print(f"  raw records: {outcome.raw_path}")
+            else:
+                print(f"  {outcome.detail}")
+                exit_code = 1
+        return exit_code
+
+    if args.command == "full":
+        outcome = run_full(args.config_id)
+        print(f"config: {outcome.config_id}")
+        print(f"stage0: tool_capable={outcome.stage0.tool_capable if outcome.stage0 else None}")
+        if outcome.stage1:
+            for tier, stage in outcome.stage1.items():
+                print(f"stage1 {tier}: {stage.status}")
+        if outcome.stage2a:
+            print(
+                f"stage2a: proceeds={outcome.stage2a.proceeds} "
+                f"({outcome.stage2a.tasks_passed}/{outcome.stage2a.tasks_total})"
+            )
+        if outcome.stage2b:
+            print(f"stage2b: {outcome.stage2b.status}")
+        if outcome.stage3:
+            for suite_name, stage in outcome.stage3.items():
+                print(f"stage3 {suite_name}: {stage.status}")
+        if outcome.stopped_reason:
+            print(f"stopped: {outcome.stopped_reason}")
+            return 1
+        print("completed through Stage 3")
+        return 0
 
     return 2
 

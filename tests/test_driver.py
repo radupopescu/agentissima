@@ -323,6 +323,76 @@ def test_outcome_root_is_the_sandbox_root(sandbox):
     assert Path(outcome.root) == sandbox.root
 
 
+# --- Stage 5B: context compaction (§9 Stage 5B) -----------------------------
+
+
+def test_full_history_mode_sends_everything(sandbox):
+    client = FakeClient(
+        [call_turn("read_file", '{"path": "a.txt"}', "c1"), answer_turn("done")]
+    )
+    NativeDriver(client=client, history_mode="full")(BY_ID["W01"], sandbox)
+    # Second request carries system, user, assistant, tool: nothing dropped.
+    assert len(client.seen_messages[1]) == 4
+
+
+def test_compact_history_mode_drops_earlier_turns(sandbox):
+    client = FakeClient([
+        call_turn("read_file", '{"path": "a.txt"}', "c1"),
+        call_turn("list_files", '{"path": "."}', "c2"),
+        answer_turn("done"),
+    ])
+    NativeDriver(client=client, history_mode="compact")(BY_ID["W01"], sandbox)
+
+    # First request: no prior turn yet, so nothing to compact.
+    assert len(client.seen_messages[0]) == 2
+
+    # Third request: system, user, plus only the second turn's assistant+tool
+    # — the first turn's assistant+tool pair is not sent.
+    third = client.seen_messages[2]
+    assert len(third) == 4
+    assert third[0]["role"] == "system"
+    assert third[1]["role"] == "user"
+    assert third[2]["role"] == "assistant"
+    assert third[2]["tool_calls"][0]["function"]["name"] == "list_files"
+    assert third[3]["role"] == "tool"
+
+
+def test_compact_history_mode_keeps_a_multi_call_turn_together(sandbox):
+    """A fixed message-count slice could split a multi-call turn and leave a
+    tool_call_id with no matching response; slicing by turn boundary must
+    not do that."""
+    multi_call = StreamedTurn(
+        tool_calls=[
+            ToolCallFragment(index=0, id="a", name="read_file", arguments='{"path": "a.txt"}'),
+            ToolCallFragment(index=1, id="b", name="list_files", arguments='{"path": "."}'),
+        ],
+        t_request=0.0, t_first=0.1, t_last=0.2,
+        prompt_tokens=10, completion_tokens=5, finish_reason="tool_calls",
+    )
+    client = FakeClient([multi_call, answer_turn("done")])
+    NativeDriver(client=client, history_mode="compact")(BY_ID["W01"], sandbox)
+
+    # system, user, assistant, tool, tool: both tool results for the one
+    # assistant message are present — neither was split off.
+    second = client.seen_messages[1]
+    assert len(second) == 5
+    tool_ids = [m["tool_call_id"] for m in second if m["role"] == "tool"]
+    assert tool_ids == ["a", "b"]
+
+
+def test_compaction_does_not_shrink_the_transcript(sandbox):
+    """messages/the transcript still hold full history — only what's sent to
+    the model is truncated."""
+    client = FakeClient([
+        call_turn("read_file", '{"path": "a.txt"}', "c1"),
+        call_turn("list_files", '{"path": "."}', "c2"),
+        answer_turn("done"),
+    ])
+    outcome = NativeDriver(client=client, history_mode="compact")(BY_ID["W01"], sandbox)
+    # system, user, then 2 turns of (assistant, tool) = 6 messages total.
+    assert len(outcome.transcript) == 6
+
+
 # --- reasoning models (§5.1) ------------------------------------------------
 
 

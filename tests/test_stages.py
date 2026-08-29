@@ -323,3 +323,182 @@ def test_gate_reports_zero_when_the_stage_did_not_complete():
     assert outcome.proceeds is False
     assert outcome.tasks_total == 0
     assert outcome.mean_progress == 0.0
+
+
+# --- Stage 1: raw inference --------------------------------------------------
+
+
+def _raw_turn(completion_tokens: int, finish_reason: str = "stop"):
+    return StreamedTurn(
+        content="x" * completion_tokens, t_request=0.0, t_first=0.1, t_last=0.2,
+        prompt_tokens=8000, completion_tokens=completion_tokens, finish_reason=finish_reason,
+    )
+
+
+class RawFakeClient:
+    """Stands in for `LMStudioClient` for `run_stage1`, which calls
+    `stream_turn` directly with one message and no tool schema."""
+
+    def __init__(self, turns):
+        self.turns = list(turns)
+        self.seen: list[list[dict]] = []
+
+    def measure_overhead(self, **kwargs):
+        return 0.01
+
+    def stream_turn(self, messages, tools=None, clock=None):
+        self.seen.append(messages)
+        if not self.turns:
+            raise AssertionError("stream_turn called with no scripted turns left")
+        return self.turns.pop(0)
+
+
+def test_stage1_retries_once_when_completion_is_short(tmp_path, monkeypatch):
+    _patch_common(monkeypatch)
+    client = RawFakeClient([_raw_turn(50), _raw_turn(200)])
+    monkeypatch.setattr(stages, "LMStudioClient", _client_factory(client))
+
+    outcome = stages.run_stage1("FAKE", "8k", repetitions=1, results_dir=tmp_path)
+
+    assert outcome.status == "completed"
+    assert len(outcome.records) == 1
+    assert outcome.records[0]["completion_tokens"] == 200
+    assert len(client.seen) == 2  # primary, then the alternate retry
+
+
+def test_stage1_does_not_retry_when_completion_is_long_enough(tmp_path, monkeypatch):
+    _patch_common(monkeypatch)
+    client = RawFakeClient([_raw_turn(150)])
+    monkeypatch.setattr(stages, "LMStudioClient", _client_factory(client))
+
+    outcome = stages.run_stage1("FAKE", "8k", repetitions=1, results_dir=tmp_path)
+
+    assert outcome.records[0]["completion_tokens"] == 150
+    assert len(client.seen) == 1
+
+
+def test_stage1_records_have_no_task_progress_or_tool_calls(tmp_path, monkeypatch):
+    _patch_common(monkeypatch)
+    client = RawFakeClient([_raw_turn(150)])
+    monkeypatch.setattr(stages, "LMStudioClient", _client_factory(client))
+
+    outcome = stages.run_stage1("FAKE", "8k", repetitions=1, results_dir=tmp_path)
+
+    record = outcome.records[0]
+    assert record["passed"] is None
+    assert record["progress_score"] is None
+    assert record["tool_calls"] == 0
+    assert record["suite"] == "1"
+    assert record["task_id"] == "8k"
+
+
+def test_stage1_resumes(tmp_path, monkeypatch):
+    _patch_common(monkeypatch)
+    client = RawFakeClient([_raw_turn(200) for _ in range(5)])
+    monkeypatch.setattr(stages, "LMStudioClient", _client_factory(client))
+    first = stages.run_stage1("FAKE", "8k", results_dir=tmp_path)
+    assert len(first.records) == 5
+
+    empty = RawFakeClient([])
+    monkeypatch.setattr(stages, "LMStudioClient", _client_factory(empty))
+    second = stages.run_stage1("FAKE", "8k", results_dir=tmp_path)
+    assert len(second.records) == 5
+    assert empty.seen == []
+
+
+# --- run_full: sequencing and gating -----------------------------------------
+#
+# These mock at the stage-function level (run_stage0, run_stage1, ...), not
+# the client level: each of those is already independently tested above, and
+# scripting a full nine-stage-construction success path down to individual
+# tool calls would mean hand-writing hundreds of turns to test logic that
+# doesn't touch a client at all. What's novel in run_full is the sequencing
+# and gating, which this exercises directly.
+
+
+def _stage_outcome(status="completed", records=None):
+    return stages.StageOutcome(status=status, records=records or [])
+
+
+def _stage0_outcome(tool_capable, status="completed"):
+    return stages.Stage0Outcome(
+        tool_capable=tool_capable, valid_runs=9 if tool_capable else 0, total_runs=9,
+        stage=_stage_outcome(status),
+    )
+
+
+def _stage2a_outcome(proceeds, status="completed"):
+    return stages.Stage2AOutcome(
+        proceeds=proceeds, tasks_passed=5 if proceeds else 0, tasks_total=10,
+        mean_progress=3.0 if proceeds else 1.0, stage=_stage_outcome(status),
+    )
+
+
+def test_run_full_stops_when_not_tool_capable(monkeypatch):
+    monkeypatch.setattr(stages, "run_stage0", lambda *a, **k: _stage0_outcome(False))
+
+    def explode(*a, **k):
+        raise AssertionError("must not run Stage 1 when Stage 0 failed its gate")
+
+    monkeypatch.setattr(stages, "run_stage1", explode)
+
+    outcome = stages.run_full("FAKE")
+    assert outcome.stopped_reason == "not tool-capable (Stage 0 gate)"
+    assert outcome.stage1 == {}
+
+
+def test_run_full_stops_when_stage0_does_not_complete(monkeypatch):
+    monkeypatch.setattr(
+        stages, "run_stage0", lambda *a, **k: _stage0_outcome(False, status="oversized")
+    )
+    outcome = stages.run_full("FAKE")
+    assert "stage0 oversized" in outcome.stopped_reason
+
+
+def test_run_full_stops_when_stage2a_gate_fails(monkeypatch):
+    monkeypatch.setattr(stages, "run_stage0", lambda *a, **k: _stage0_outcome(True))
+    monkeypatch.setattr(stages, "run_stage1", lambda config_id, tier, **k: _stage_outcome())
+    monkeypatch.setattr(stages, "run_stage2a", lambda *a, **k: _stage2a_outcome(False))
+
+    def explode(*a, **k):
+        raise AssertionError("must not run Stage 2B when the 2A gate failed")
+
+    monkeypatch.setattr(stages, "run_stage2b", explode)
+
+    outcome = stages.run_full("FAKE")
+    assert outcome.stopped_reason == "failed Stage 2A gate"
+    assert len(outcome.stage1) == 2
+    assert outcome.stage2b is None
+
+
+def test_run_full_stops_when_stage2b_does_not_complete(monkeypatch):
+    monkeypatch.setattr(stages, "run_stage0", lambda *a, **k: _stage0_outcome(True))
+    monkeypatch.setattr(stages, "run_stage1", lambda config_id, tier, **k: _stage_outcome())
+    monkeypatch.setattr(stages, "run_stage2a", lambda *a, **k: _stage2a_outcome(True))
+    monkeypatch.setattr(
+        stages, "run_stage2b", lambda *a, **k: _stage_outcome(status="oversized")
+    )
+
+    def explode(*a, **k):
+        raise AssertionError("must not run Stage 3 when Stage 2B did not complete")
+
+    monkeypatch.setattr(stages, "run_stage3", explode)
+
+    outcome = stages.run_full("FAKE")
+    assert "stage2b oversized" in outcome.stopped_reason
+
+
+def test_run_full_reaches_stage3_on_success(monkeypatch):
+    monkeypatch.setattr(stages, "run_stage0", lambda *a, **k: _stage0_outcome(True))
+    monkeypatch.setattr(stages, "run_stage1", lambda config_id, tier, **k: _stage_outcome())
+    monkeypatch.setattr(stages, "run_stage2a", lambda *a, **k: _stage2a_outcome(True))
+    monkeypatch.setattr(stages, "run_stage2b", lambda *a, **k: _stage_outcome())
+    monkeypatch.setattr(
+        stages, "run_stage3",
+        lambda *a, **k: {"W": _stage_outcome(), "T": _stage_outcome()},
+    )
+
+    outcome = stages.run_full("FAKE")
+    assert outcome.stopped_reason is None
+    assert outcome.stage3["W"].status == "completed"
+    assert outcome.stage3["T"].status == "completed"

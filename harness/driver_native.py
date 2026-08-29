@@ -39,6 +39,13 @@ class NativeDriver:
     max_steps: int = MAX_STEPS
     wall_clock_limit_s: float = WALL_CLOCK_LIMIT_S
     clock: object = time.monotonic
+    # Stage 5B's context-compaction experiment (§9 Stage 5B). "full" (the
+    # controlled comparison) sends the whole accumulated history every turn;
+    # "compact" sends only the system+user messages plus the most recent
+    # assistant+tool exchange. `messages`/the transcript always accumulate the
+    # full history regardless — only what is sent to the model differs, so
+    # this is the only variable the experiment changes.
+    history_mode: str = "full"
 
     def __call__(self, task: Task, sandbox: Sandbox) -> RunOutcome:
         clock = self.clock
@@ -48,6 +55,14 @@ class NativeDriver:
             {"role": "system", "content": assemble(task.extra_rules)},
             {"role": "user", "content": task.prompt},
         ]
+        # Index into `messages` where the most recent assistant turn starts
+        # (the assistant message plus every tool message that answers it).
+        # Sliced by turn, not by a fixed message count, because one assistant
+        # turn can carry several tool calls, and the API requires every
+        # tool_call_id an assistant message references to have a matching
+        # tool response in the same request — a fixed-count slice could split
+        # a multi-call turn and send an invalid request.
+        last_turn_start: int | None = None
 
         timing = RunTiming()
         calls = []
@@ -65,7 +80,11 @@ class NativeDriver:
                 termination = "timeout"
                 break
 
-            turn = self.client.stream_turn(messages, TOOL_SCHEMAS, clock=clock)
+            sent = messages
+            if self.history_mode == "compact" and last_turn_start is not None:
+                sent = messages[:2] + messages[last_turn_start:]
+
+            turn = self.client.stream_turn(sent, TOOL_SCHEMAS, clock=clock)
             steps += 1
             timing.add(turn_metrics(turn, self.overhead_s))
             final_finish_reason = turn.finish_reason
@@ -79,6 +98,7 @@ class NativeDriver:
                 termination = "final_answer" if answer.strip() else "empty_answer"
                 break
 
+            last_turn_start = len(messages)
             messages.append(_assistant_message(turn))
 
             stop = None

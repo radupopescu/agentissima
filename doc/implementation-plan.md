@@ -27,9 +27,12 @@ this file.
 | Model lifecycle | `harness/lmstudio.py` | `lms` load/unload/ps, stage-scoped context manager |
 | Configuration probes | `setup/probe_config.py`, `setup/probe_process.py` | All six `configs/*.yaml` resolved; 31 tests |
 | Environment capture | `harness/environment.py`, `harness/admissibility.py` | §3.1 preconditions verified live; 20 tests |
-| Stage 0 + resumable stage runner + Stage 2A gate | `harness/tasks/smoke.py`, `harness/results.py`, `harness/stages.py` | Stage 0 verified live against all six configs; Stage 2A gate unit-tested only; 20 tests |
+| Stage 0/1 + resumable stage runner + Stage 2A gate + `run_full` | `harness/tasks/smoke.py`, `harness/results.py`, `harness/stages.py` | Stage 0 (all six configs) and Stage 1 (LFM-M8) verified live; Stage 2A/2B/3/`run_full` unit-tested only; 44 tests |
+| Stage 1 corpus | `fixtures/build_prompts.py` | Verified live via Stage 1; 6 tests |
+| Reporting | `harness/report.py` | Verified live against real Stage 0/1 data; 17 tests |
+| Stage 5B compaction | `NativeDriver.history_mode`, `harness/stages.py`'s `run_stage5b_compact` | Unit-tested only, not run live |
 
-The harness half runs with no model and no network (126 tests):
+The harness half runs with no model and no network (162 tests):
 
 ```sh
 .venv/bin/python -m harness.gates
@@ -55,9 +58,10 @@ Four defects that only a real model exposed, now fixed and covered by tests:
 
 ### Not built
 
-The Stage 1 raw-inference corpus, reporting, and the `pi` driver. Stage 2A/2B are not yet run
-(the 2A gate is built and unit-tested but not exercised live — §4 M4b; Stage 2B needs no gate
-of its own beyond 2A's survivors, and is just `run_stage()` against `SUITE_T`).
+The `pi` driver (M7), and Stage 5B's recommended-default sampling pass (conditional — its
+detector is built, but nothing has triggered it yet). Stage 2A/2B/3 and the compaction variant
+of Stage 5B are built and unit-tested but not yet run live — each is hours long against a real
+model, and `run_full()` chains all of Stage 0-3 in one command once that's wanted.
 
 ---
 
@@ -396,23 +400,55 @@ directly against synthetic records without driving all ten Suite W tasks through
 not something to kick off incidentally while finishing the runner. The CLI is ready:
 `python -m harness.stages stage2a <config_id>`.
 
-### M5 — Stage 1 raw-inference corpus (§9 Stage 1)
+### ~~M5 — Stage 1 raw-inference corpus~~ — done and verified
 
 **New file:** `fixtures/build_prompts.py`
 
-- One prompt corpus, **identical text for every model**, sized to roughly 8K and 16K tokens.
-  Token counts differ by tokeniser and are recorded, not equalised.
-- A long-form generation prompt that reliably produces `completion_tokens ≥ 128`, plus an
-  alternate for the retry path.
-- Nonce prefix applied per §5.4.
+Writes `fixtures/prompts/{8k,16k}_{primary,alternate}.txt` — synthetic, deterministic, rng-
+templated documents (same spirit as `build_workspace.py`), sized by a 4-chars/token heuristic
+used only to decide how much filler to generate; actual token counts are recorded from the API
+response (§9 Stage 1's own text on this). Each ends with a closing instruction that reliably
+produces `completion_tokens ≥ 128`; `primary`/`alternate` per tier are independently generated
+bodies, not the same text with a different last line.
 
-### M6 — Reporting (§10.2–§10.4)
+`harness/stages.py`'s `run_stage1()` runs the raw completions directly (no `Task`/`Sandbox` —
+Stage 1 isn't task-based), retrying once with the alternate prompt on a short completion, and
+maps the result onto a §10.1 record with `passed`/`progress_score` left `null`. Details recorded
+in `benchmark.md` §9 Stage 1.
+
+**Verified end-to-end** (2026-08-29): `python -m harness.stages stage1 LFM-M8` against the real
+configuration, both tiers. 8K: ~6500 prompt tokens (against a 8192-token heuristic target — the
+tokeniser gap is exactly what §9 Stage 1 says to expect, not equalised), 1023 completion tokens
+every repetition (no retry needed), TTFT ~14.6s, gen tok/s ~49, prompt tok/s ~455. 16K: ~13018
+prompt tokens, same completion/gen-tps pattern, TTFT ~30s. No swap, model unloaded afterwards.
+Every repetition hit `termination_reason: "length"` (cut off by `max_tokens=1024`, not a natural
+stop) — a property of pairing a long-response instruction with the fixed sampling budget, not a
+defect; changing `max_tokens` per stage would be per-model tuning, which §11 forbids.
+
+### ~~M6 — Reporting~~ — done and verified
 
 **New file:** `harness/report.py`
 
-Regenerate every table from JSONL only. Suite W and Suite T scores stay in separate columns and
-are never averaged. Headline metric is successful tasks per hour of wall clock, per suite; ties
-broken by peak memory. Swap-flagged runs are excluded from medians but still reported.
+Regenerates §10.1's `flaky` (grouping raw records by `(config_id, suite, task_id)`, unanimity of
+`passed` — deliberately deferred to here by `stages.py`, per §9.1), §10.2's headline metric, and
+§10.3's final table, all from JSONL only. Two computations needed a precise, recorded decision
+because the spec doesn't fully pin them down — both are now in `benchmark.md`:
+
+- **Headline metric denominator** (§10.2): every run's wall clock in that suite's stage, not
+  only the passing runs' — a fast failure must not outscore a slow one.
+- **Final table's throughput columns** (§10.3) come from Stage 1 at 8K specifically, never
+  Suite W/T, because §5.4 rules out comparing Phase 2 numbers across configurations. **Verdict**
+  is a mechanical stage-progression status, not the qualitative judgement the prose implies —
+  that's §10.4, written by a person once real multi-configuration data exists. §10.4 itself is
+  not auto-generated for the same reason.
+
+Also built here: the §4.2 degenerate-rate detector (`is_degenerate_triggered`) that Stage 5B's
+recommended-sampling pass depends on — see M8.
+
+**Verified end-to-end** (2026-08-29): `python -m harness.report` against the real committed
+Stage 0 (all six configurations) and Stage 1 (LFM-M8) data — correct verdicts (`"passed Stage 0
+only"` where no Suite W data exists yet), correct throughput row for LFM-M8, graceful handling
+of configurations with no Suite W/T data rather than crashing.
 
 ### M7 — `pi` driver and the parity gate (§4.1, §8)
 
@@ -422,12 +458,30 @@ Implement the same `Driver` signature by shelling out to pi against the same end
 same fixture copy. Record its version and system-prompt hash. Then add the **driver parity
 gate** to `gates.py`: the oracle's tool sequence replayed through pi's fixture handling must
 also score 20/20, proving the assertions are genuinely driver-independent before Stage 5A is
-trusted.
+trusted. Not started — not requested yet.
 
-### M8 — Stage 5B (§9 Stage 5B)
+### M8 — Stage 5B — partially done: the compaction experiment; unit-tested, not run live
 
-The context-compaction experiment and, only if greedy decoding proved degenerate, the
-recommended-defaults sampling pass. Neither feeds the controlled comparison.
+§9 Stage 5B has three parts, only one of which is a concrete, buildable deliverable — see
+`benchmark.md` §9 Stage 5B for the reasoning recorded against each:
+
+- **Alternative quantisations**: no new code needed. `config_id` is already a free parameter.
+- **Recommended-default sampling**: conditional on `harness/report.py`'s
+  `is_degenerate_triggered` actually firing for some configuration, which requires real Stage
+  2A/2B data that doesn't exist yet. The detector is built; the sampling pass itself is an
+  operator action once triggered, not an automatic pipeline step.
+- **Context-compaction experiment** — built: `NativeDriver` gained a `history_mode` field
+  (`"full"`/`"compact"`); compacting sends only `[system, user] + <the most recent
+  assistant+tool exchange>`, tracked by turn boundary rather than a fixed message count so a
+  multi-tool-call turn is never split (which would leave a `tool_call_id` unanswered and produce
+  an invalid request). `harness/stages.py`'s `run_stage5b_compact()` runs Suite W and T through
+  it, writing `driver="native-compact"` to its own raw files
+  (`stage5b-compact-{w,t}.jsonl`) — never pooled with the controlled comparison.
+
+**Not run live** — Suite W/T through the compaction driver is exactly as long as Stage 2A/2B
+themselves; verified by `tests/test_driver.py`'s compaction tests (full history vs. compact,
+multi-call turns kept together, the transcript unaffected) and `tests/test_stages.py`, not
+against a real model.
 
 ---
 

@@ -121,13 +121,18 @@ never enters a benchmark run.
 
 Built and verified without a model: fixtures, sandbox, tools, both task suites, scoring,
 grading, the §8 gates, the LM Studio client, the `native` agent loop, the metrics layer, model
-lifecycle control, the configuration probes, environment capture, the Stage 0 tasks, a resumable
-stage runner, and the Stage 2A gate (unit-tested; not yet run live — see below).
+lifecycle control, the configuration probes, environment capture, the Stage 0/1 tasks, a
+resumable stage runner covering Stage 0 through Stage 3 and Stage 5B's compaction variant,
+`harness/report.py`, and `run_full()` (unit-tested; Stage 2A/2B/3/5B and `run_full` not yet run
+live — see below).
 
 Verified end-to-end against a real model: `python -m harness.smoke` (one task); `python -m
-harness.stages stage0 <config_id>` (a full Stage 0 run, including resume) — run for real
-against all six §2 configurations, all tool-capable.
+harness.stages stage0 <config_id>` — all six §2 configurations, all tool-capable; `python -m
+harness.stages stage1 <config_id>` — LFM-M8, both tiers; `python -m harness.report` against the
+real data those produced.
 
-Not built: the Stage 1 raw-inference corpus, reporting, and the `pi` driver. Stage 2A/2B are
-buildable (`python -m harness.stages stage2a <config_id>`) but not yet attempted live — 180 runs,
-6-12 hours, a deliberate separate action. See [`implementation-plan.md`](implementation-plan.md).
+Not built: the `pi` driver, and Stage 5B's recommended-default sampling pass (conditional on a
+detector that hasn't fired yet — no Suite W/T data exists to check it against). Stage 2A/2B/3
+and Stage 5B's compaction experiment are buildable (`python -m harness.stages
+{stage2a,full,stage5b-compact} <config_id>`) but not yet attempted live — hours per run, a
+deliberate separate action. See [`implementation-plan.md`](implementation-plan.md).

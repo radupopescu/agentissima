@@ -253,6 +253,7 @@ A **driver** turns `(task, sandbox)` into a completed run plus a metrics record.
 |---|---|
 | `native` | Purpose-built minimal loop. **The only driver used for the controlled comparison** (Stages 0–4). |
 | `pi` | pi agent, driven headlessly against the same LM Studio endpoint. Used only for the Stage 5A cross-check. |
+| `native-compact` | `native` with `history_mode="compact"` (§9 Stage 5B): only the system+user messages and the most recent assistant+tool exchange are sent each turn, never the full history. Used only for Stage 5B's context-compaction experiment, written to its own raw files, never pooled with the controlled comparison. |
 
 Rules that keep this sound:
 
@@ -799,6 +800,21 @@ because load duration is not part of what the benchmark measures: TTFT and every
 timing are defined against an already-serving model, and the duration of `lms load` is a
 property of LM Studio's loader, not of agent work.
 
+**Corpus**: `fixtures/build_prompts.py` writes `fixtures/prompts/{8k,16k}_{primary,alternate}.txt`
+— synthetic long-form documents (deterministic, rng-templated, same spirit as
+`build_workspace.py`), sized to the tier by a 4-characters-per-token heuristic used only to
+decide how much filler text to generate. Each ends with a closing instruction asking for a long,
+detailed response, so a repetition should reliably clear the 128-token floor. `primary` and
+`alternate` per tier are independently generated bodies, not the same text with a different
+final line, so a retry isn't just asking the same content again.
+
+**Record mapping** (`harness/stages.py`'s `run_stage1`): a repetition is one §10.1 record either
+way — a retried attempt replaces the primary one, it doesn't add a second record for the same
+repetition. `passed`/`progress_score` are `null` (no assertion exists for raw inference);
+`tool_calls`/`invalid_calls`/`path_errors` are `0`; `termination_reason` is the model's actual
+`finish_reason` (e.g. `"stop"`/`"length"`) rather than one of `native`'s §4.8 values, which don't
+apply outside the agent loop.
+
 ### Stage 2A — Suite W at 8K
 
 All tool-capable configurations, 3 repetitions per task. **180 runs.**
@@ -825,7 +841,9 @@ Survivors of the 2A gate only, 3 repetitions per task.
 
 ### Stage 3 — 16K
 
-Both suites, for configurations above the floor at 8K.
+Both suites, for configurations above the floor at 8K. Repetitions: 3 per task, as at Stage
+2A/2B — not restated in the original text, but nothing suggests a different methodology at 16K,
+and `harness/stages.py`'s `run_stage3` uses the same figure (`AGENT_REPETITIONS`).
 
 ### Stage 4 — long context
 
@@ -852,6 +870,22 @@ compaction experiment:
 
 Nothing in Stage 5B feeds the controlled comparison.
 
+What each part actually requires, recorded so it's clear what runs automatically versus what's
+an operator decision:
+
+- **Alternative quantisations** need no new code: `config_id` is already a free parameter, so
+  this is running the existing stages against a configuration outside the primary six.
+- **Recommended-default sampling** only runs once the §4.2 trigger has actually fired —
+  `harness/report.py`'s `is_degenerate_triggered` checks raw records for it (repetition loops,
+  empty completions, or a malformed-call/timeout termination, at >20% of a configuration's agent
+  runs), but nothing runs the recommended-sampling pass automatically. It's an operator action
+  once the detector says so, not a pipeline step — there is nothing to trigger it against until
+  real Stage 2A/2B data exists for a configuration.
+- **The context-compaction experiment** is the one part built as a runnable stage:
+  `harness/stages.py`'s `run_stage5b_compact()`, using `NativeDriver(history_mode="compact")` —
+  see §4.1's `native-compact` row. Not part of `run_full()`; run separately, since it never
+  feeds the controlled comparison.
+
 ### 9.1 Repetition handling
 
 Results not unanimous across the 3 repetitions are flagged `flaky` and reported as `k/3`. They
@@ -876,6 +910,17 @@ generated, exactly as "reports regenerate from JSONL only" already requires.
 The full unpruned matrix — 2 suites × 2 contexts × 10 tasks × 3 repetitions × 6 configurations
 — is **720 agent runs** and is not attempted. The 2A gate and 8K-before-16K staging keep this
 tractable. Each gate is an explicit go/no-go decision point, not a formality.
+
+### 9.3 Running the full sequence for one configuration
+
+`harness/stages.py`'s `run_full(config_id)` (`python -m harness.stages full <config_id>`)
+sequences Stage 0 → Stage 1 (8K, 16K) → Stage 2A → Stage 2B → Stage 3 for one configuration and
+stops there, on the first gate failure or a stage that doesn't complete
+(`unsupported`/`oversized`). It does not continue to Stage 4: that stage's trigger ("only where
+Stage 3 showed failures attributable to context limits") is a judgement about failure *cause*,
+not a mechanical threshold like Stage 0/2A's gates, and automating past it would be exactly the
+formality §9.2 warns against. Stage 5A needs the `pi` driver; Stage 5B is a standalone
+experiment that never feeds the controlled comparison (above). Both are separate, manual steps.
 
 ---
 
@@ -906,6 +951,10 @@ and are never hand-edited.
 Never averaged across suites. Raw token throughput does not determine the winner if a faster
 configuration fails materially more tasks. Ties are broken by peak memory.
 
+The denominator is every run's wall clock in that suite's stage, not only the passing runs' —
+a configuration that fails fast must not score better than one that fails slowly by the same
+count; both cost real wall clock. `harness/report.py`'s `suite_summary` implements this.
+
 ### 10.3 Final table
 
 | Configuration | Suite W | Suite T | TTFT | Gen tok/s | Prompt tok/s | Peak RAM | Swap | Verdict |
@@ -918,6 +967,20 @@ configuration fails materially more tasks. Ties are broken by peak memory.
 | Bonsai GGUF Q2_0_g64 | | | | | | | | |
 
 The Stage 5A cross-check is a separate table, never merged into this one.
+
+`harness/report.py` builds this table from raw JSONL. Two columns need a source and a
+computation stated precisely, since neither is obvious from the schema alone:
+
+- **TTFT / Gen tok/s / Prompt tok/s / Peak RAM / Swap** come from **Stage 1 at 8K only**, never
+  from Suite W/T runs — §5.4 is explicit that Phase 2 (agent) throughput "must not be compared
+  across configurations" once the prompt cache is warm past turn 1, and Stage 1's nonce-prefixed
+  raw inference is the only clean measurement. First repetition discarded; median of the
+  remaining four, swap-flagged runs excluded from the median but `Swap` still reports whether any
+  occurred (§9 Stage 1).
+- **Verdict** is a mechanical stage-progression status (`excluded: not tool-capable`, `excluded:
+  failed Stage 2A gate`, `proceeded to Stage 3`, …), not the qualitative judgement this section's
+  prose might suggest — that is §10.4's conclusion, written by a person once real
+  multi-configuration data exists, not generated by this table.
 
 ### 10.4 Reporting the three questions
 
