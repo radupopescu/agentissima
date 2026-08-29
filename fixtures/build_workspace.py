@@ -426,6 +426,12 @@ def _write_expected(
             "stale": STALE_HEADCOUNT,
         },
         "W10": {"code": REFERENCE_CODE, "count": len(software_2026)},
+        # Stage 0 tasks (harness/tasks/smoke.py) check tool calls directly and
+        # carry no fixture-derived expected value; empty, but still generated
+        # here so every task has a matching fixtures/expected/<id>.json.
+        "S01": {},
+        "S02": {},
+        "S03": {},
         "_meta": {"seed": SEED, "note_files": note_files},
     }
 

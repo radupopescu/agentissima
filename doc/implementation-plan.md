@@ -27,8 +27,9 @@ this file.
 | Model lifecycle | `harness/lmstudio.py` | `lms` load/unload/ps, stage-scoped context manager |
 | Configuration probes | `setup/probe_config.py`, `setup/probe_process.py` | All six `configs/*.yaml` resolved; 31 tests |
 | Environment capture | `harness/environment.py`, `harness/admissibility.py` | §3.1 preconditions verified live; 20 tests |
+| Stage 0 + resumable stage runner | `harness/tasks/smoke.py`, `harness/results.py`, `harness/stages.py` | Verified live against LFM-M8, incl. resume; 13 tests |
 
-The harness half runs with no model and no network (43 tests):
+The harness half runs with no model and no network (118 tests):
 
 ```sh
 .venv/bin/python -m harness.gates
@@ -54,7 +55,8 @@ Four defects that only a real model exposed, now fixed and covered by tests:
 
 ### Not built
 
-The Stage 0 tasks, the stage runners, results output, reporting, and the `pi` driver.
+The Stage 2A/2B-specific gate, the Stage 1 raw-inference corpus, reporting, and the `pi`
+driver.
 
 ---
 
@@ -314,20 +316,60 @@ precondition was also confirmed to fire: loading a second configuration while th
 resident raised `PreconditionError` with the expected message. `lms load --context-length` was
 confirmed to actually set the context (answers the open question below).
 
-### M4 — Stage 0 tasks, results output, stage runner (§9, §10.1)
+### ~~M4a — Stage 0 tasks, results output, resumable stage runner~~ — done and verified
 
 **New files:** `harness/tasks/smoke.py`, `harness/results.py`, `harness/stages.py`
 
-- Three trivial single-tool tasks for Stage 0: e.g. list the root, read one named small file,
-  search for one literal string. Each must be solvable in a single correct tool call. They are
-  a tool-calling check, not a reasoning check.
-- JSONL writer against the exact §10.1 field list. Nullable fields carry `null`; never
-  substitute an estimate. Transcripts persisted alongside, path recorded.
-- Stage runner: repetitions, `flaky` flagging for non-unanimous results, `min_context` skip,
-  `unsupported` / `oversized` skip, and the Stage 2A gate (≥3/10 passes **or** mean progress
-  ≥2.5).
-- A resume capability is worth having: Stage 2A is 180 runs and 6–12 hours. Key runs by
-  `(config_id, suite, task_id, repetition)` and skip those already present in the JSONL.
+- Three trivial single-tool tasks for Stage 0 (`S01`-`S03`): list the root, read `README.md`,
+  search for a literal phrase — all fixed text in `fixtures/build_workspace.py`, independent of
+  Suite W/T content so Stage 0 never moves when a fixture is regenerated. Each `check` inspects
+  `ctx.calls` directly for a valid call of the right tool against the right target; it is a
+  tool-calling check, not a reasoning check, so the final answer is not graded.
+- `harness/results.py`: JSONL writer against the exact §10.1 field list, one file per stage
+  under `results/<session>/raw/<stage_name>.jsonl`. `append_record` refuses a record whose keys
+  don't match the schema exactly. `flaky` is always written `null` — see §9.1's amended text:
+  deciding it needs every repetition of a task, which resume (below) writes one at a time, and
+  JSONL is append-only, so it is a reporting-layer computation (M6), not a write-time one.
+- `harness/stages.py`'s `run_stage()`: loads a model once (§9.0), runs `tasks × repetitions`
+  under a fresh `MemorySampler`/`SwapWindow` pair per run (mirrors `harness/smoke.py`), persists
+  each run's transcript, and unloads on the way out — including on a `ModelOversizedError`,
+  reported as an `oversized` stage outcome rather than raised. `classify_declared` short-circuits
+  an `unsupported` context before any load is attempted. Generic over the task list and
+  repetition count, so Stage 2A/2B reuse it unchanged; `run_stage0()` is the first caller,
+  applying the §9 Stage 0 gate (below).
+- **Resume is automatic, not a flag.** `environment.capture()` gained an optional `session_id`
+  parameter; `run_stage()` always passes `f"{config_id}-{context_length}"`, so re-running the
+  same stage command lands in the same `results/<config_id>-<context>/` directory and
+  `results.existing_keys()` on that stage's own raw file skips what is already there. Verified
+  live (below): a second identical invocation touched no model call and left the raw file's
+  record count unchanged.
+- **Stage 0 gate math, resolved.** §9's "fewer than 2 of 3 valid tool calls" for "3 tasks × 3
+  repetitions" is read as an aggregate rate over the 9 runs (≥6/9), not a per-task count — a
+  Stage 0 task is solved in exactly one tool call, so a per-task "2 of 3" is not a meaningful
+  quantity. Recorded in `benchmark.md` §9 Stage 0.
+- **`task_set_version` is the resume-safety signal, not `environment_sha256`.** The first design
+  compared the full `environment_sha256` across a resumed session's existing records and the
+  freshly captured one, refusing to append on any mismatch. A live verification run broke this
+  immediately: `free_memory_bytes` and `swap_used_bytes_start` are instant-in-time machine
+  readings that differ between any two captures regardless of comparability, so the hash never
+  matched twice and resume was defeated outright — the harness raised `SessionMismatchError` on
+  the second, identical invocation. Fixed to compare `task_set_version` instead (`harness/
+  stages.py`'s `_check_task_set_version_matches`), which §11 already designates as the one flag
+  that means "results are/aren't comparable," and is a per-record field so no extra file read is
+  needed. `environment_sha256` is unchanged as a per-record §10.1 field — each run still points
+  at exactly the capture it was taken under.
+
+**Verified end-to-end** (2026-08-29): `python -m harness.stages stage0 LFM-M8` against the real
+LFM-M8 configuration — 9/9 valid tool calls, `tool_capable=True`, transcripts persisted and
+readable, model unloaded afterwards. Re-running the identical command resumed correctly: the raw
+file stayed at 9 records and no new tool call was made (confirmed by timing — the second run
+took ~18 s, all of it load and overhead calibration, none of it task execution).
+
+**Not yet built** (left for when Stage 2A is actually attempted): the Stage 2A-specific gate
+(≥3/10 passes **or** mean progress ≥2.5 — `run_stage()` is generic enough to take this as a
+caller-supplied check once written) and an explicit `min_context` skip (Stage 0's tasks all
+declare `min_context=8192`, equal to the only context Stage 0 runs at, so nothing yet exercises
+skipping a task whose `min_context` exceeds the stage's context).
 
 ### M5 — Stage 1 raw-inference corpus (§9 Stage 1)
 

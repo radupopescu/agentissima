@@ -38,6 +38,7 @@ class Graded:
     wall_clock_s: float
     answer: str
     metrics: dict | None = None
+    transcript: list[dict] | None = None
 
 
 @contextmanager
@@ -101,4 +102,5 @@ def run_task(task: Task, driver: Driver) -> Graded:
         wall_clock_s=round(elapsed, 3),
         answer=outcome.answer,
         metrics=outcome.metrics,
+        transcript=outcome.transcript,
     )

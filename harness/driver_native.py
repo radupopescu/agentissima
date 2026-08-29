@@ -124,6 +124,7 @@ class NativeDriver:
             termination_reason=termination,
             steps=steps,
             metrics=_metrics_dict(timing, final_finish_reason),
+            transcript=messages,
         )
 
 

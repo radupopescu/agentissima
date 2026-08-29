@@ -762,10 +762,14 @@ why context is a property of the stage rather than of an individual request.
 
 ### Stage 0 — tool-calling gate
 
-Three trivial single-tool tasks × 3 repetitions per configuration.
+Three trivial single-tool tasks (`harness/tasks/smoke.py`) × 3 repetitions per configuration —
+9 runs each, ~54 short runs across all six.
 
-**Gate:** fewer than 2 of 3 valid tool calls ⇒ the configuration is marked `not tool-capable`,
-excluded from all agent stages, and retained in Phase 1 only. ~54 short runs.
+**Gate:** fewer than 2/3 of a configuration's Stage 0 runs include a valid tool call ⇒ the
+configuration is marked `not tool-capable`, excluded from all agent stages, and retained in
+Phase 1 only. This is an aggregate rate over the 9 runs (≥6 of 9), not a per-task count — a
+single Stage 0 task is solved in exactly one tool call, so "2 of 3" per task would not be a
+meaningful quantity. `harness/stages.py`'s `run_stage0` implements this.
 
 Stage 0 is a pre-flight check that the tool-calling plumbing works, not a capability
 classifier. It exists to catch a broken configuration or harness mismatch — bad tool-call
@@ -840,6 +844,13 @@ Nothing in Stage 5B feeds the controlled comparison.
 
 Results not unanimous across the 3 repetitions are flagged `flaky` and reported as `k/3`. They
 are never averaged into a single figure that hides the variance.
+
+`flaky` is decided by the reporting layer (§10.1), not stored at write time. Deciding it needs
+every repetition of a task, and the raw JSONL is written and resumed one run at a time — a
+record already on disk is never rewritten (`way-of-working.md`'s append-only rule) once its
+sibling repetitions land. Every raw record therefore carries `flaky: null`; grouping by
+`(config_id, suite, task_id)` and checking unanimity of `passed` happens when a report is
+generated, exactly as "reports regenerate from JSONL only" already requires.
 
 ### 9.2 Run budget
 
@@ -936,3 +947,8 @@ results**:
 - the 4000-character truncation limit
 - the sandbox allowlist
 - a driver version
+
+Stage 0's three tasks (`harness/tasks/smoke.py`) are not "either task set" above — they are a
+separate pre-flight check under their own `suite="0"`, never Suite W or T, and don't touch the
+W/T task definitions `task_set_version` describes. Adding or changing them does not bump
+`task_set_version`; nothing already recorded under a given version becomes incomparable.

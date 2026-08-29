@@ -278,11 +278,17 @@ def capture(
     out_dir: str | Path = "results",
     configs_dir: str | Path | None = None,
     verify_hash: bool = True,
+    session_id: str | None = None,
 ) -> SessionEnvironment:
     """Assert §3.1 preconditions and write results/<session>/environment.json.
 
     Raises `PreconditionError` on the first failure — sessions never start on
     a machine that cannot produce comparable numbers.
+
+    `session_id` names the session directory verbatim, for a caller that needs
+    a deterministic, reusable location (a stage runner resuming into the same
+    directory across repeated invocations). Left unset, a session is named
+    `<config_id>-<context_length>-<timestamp>`, unique per call.
     """
     resolved = load_resolved(config_id, configs_dir and Path(configs_dir))
 
@@ -348,7 +354,7 @@ def capture(
         "swap_used_bytes_start": swap_used_bytes(),
     }
 
-    session = f"{config_id}-{context_length}-{time.strftime('%Y%m%dT%H%M%S')}"
+    session = session_id or f"{config_id}-{context_length}-{time.strftime('%Y%m%dT%H%M%S')}"
     session_dir = Path(out_dir) / session
     session_dir.mkdir(parents=True, exist_ok=True)
     path = session_dir / "environment.json"

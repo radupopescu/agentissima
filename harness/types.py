@@ -72,6 +72,9 @@ class RunOutcome:
     # Populated by `native`; left None by drivers that cannot produce §5
     # metrics. A null is never replaced by an estimate (§5.3).
     metrics: dict | None = None
+    # The full conversation, for §10.1's transcript_path. Populated by
+    # `native`; left None by drivers with no message log to persist.
+    transcript: list[dict] | None = None
 
     @property
     def invalid_calls(self) -> int:

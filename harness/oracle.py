@@ -327,11 +327,32 @@ def _t10(agent: Scripted) -> str:
     return f"Wrote audit.txt containing LG-9032,{count}."
 
 
+# --- Stage 0 -----------------------------------------------------------------
+
+
+def _s01(agent: Scripted) -> str:
+    listing = agent.call("list_files", path=".")
+    return f"The working directory contains: {', '.join(listing.splitlines())}."
+
+
+def _s02(agent: Scripted) -> str:
+    agent.call("read_file", path="README.md")
+    return "The workspace holds meeting notes, policies, and the expense and headcount registers."
+
+
+def _s03(agent: Scripted) -> str:
+    from .tasks.smoke import SEARCH_LITERAL
+
+    agent.call("search_files", pattern=SEARCH_LITERAL)
+    return "The phrase appears in README.md."
+
+
 SOLVERS = {
     "W01": _w01, "W02": _w02, "W03": _w03, "W04": _w04, "W05": _w05,
     "W06": _w06, "W07": _w07, "W08": _w08, "W09": _w09, "W10": _w10,
     "T01": _t01, "T02": _t02, "T03": _t03, "T04": _t04, "T05": _t05,
     "T06": _t06, "T07": _t07, "T08": _t08, "T09": _t09, "T10": _t10,
+    "S01": _s01, "S02": _s02, "S03": _s03,
 }
 
 
