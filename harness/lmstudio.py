@@ -86,6 +86,7 @@ class LoadedModel:
     model_key: str
     path: str
     context_length: int | None
+    format: str | None = None
 
     @classmethod
     def from_json(cls, payload: dict) -> LoadedModel:
@@ -94,6 +95,7 @@ class LoadedModel:
             model_key=payload.get("modelKey", ""),
             path=payload.get("indexedModelIdentifier") or payload.get("path", ""),
             context_length=payload.get("contextLength"),
+            format=payload.get("format"),
         )
 
 
@@ -120,6 +122,52 @@ def list_downloaded() -> list[Artefact]:
     except json.JSONDecodeError as exc:
         raise LMStudioError(f"could not parse lms ls output: {exc}") from exc
     return [Artefact.from_json(item) for item in payload]
+
+
+@dataclass(frozen=True)
+class RuntimeEngine:
+    """One row of `lms runtime ls`: an installed LLM engine.
+
+    No `--json` output exists for this subcommand, so the table is parsed.
+    `name` is the engine identifier before its `@version` suffix, e.g.
+    `mlx-llm-mac-arm64-apple-metal-advsimd` or
+    `llama.cpp-mac-arm64-apple-metal-advsimd`; `model_format` is `MLX` or
+    `GGUF`, matching `Artefact.format`'s `safetensors`/`gguf` after
+    translation.
+    """
+
+    name: str
+    version: str
+    model_format: str
+    selected: bool
+
+
+def runtime_engines() -> list[RuntimeEngine]:
+    """Installed inference engines and which one is selected per format.
+
+    This is the authoritative source for backend identity: the resident
+    process's command line does not reliably name its engine or version
+    (§3, `backend_runtime`), but the engine LM Studio will dispatch to for a
+    given model format does not change while that engine stays selected.
+    """
+    completed = _run(["runtime", "ls"], timeout=30)
+    if completed.returncode != 0:
+        raise LMStudioError(f"lms runtime ls failed: {completed.stderr.strip()}")
+    engines = []
+    for line in completed.stdout.splitlines():
+        line = line.strip()
+        if not line or line.startswith("LLM ENGINE"):
+            continue
+        selected = "✓" in line
+        parts = line.replace("✓", "").split()
+        if len(parts) < 2:
+            continue
+        engine, model_format = parts[0], parts[-1]
+        name, sep, version = engine.rpartition("@")
+        if not sep:
+            continue
+        engines.append(RuntimeEngine(name, version, model_format, selected))
+    return engines
 
 
 def resolve(model: str) -> Artefact:

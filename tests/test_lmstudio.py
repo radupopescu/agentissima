@@ -161,3 +161,32 @@ def test_load_of_an_unknown_model_never_shells_out(catalogue, monkeypatch):
     monkeypatch.setattr(lmstudio, "_run", explode)
     with pytest.raises(LMStudioError):
         lmstudio.load("lfm2.5-2.6b")
+
+
+# --- runtime engines ----------------------------------------------------------
+
+# Real `lms runtime ls` output (0.4.21+2), trimmed to two engines each. There is
+# no `--json` form, so this table is parsed; the checkmark and column spacing
+# are the actual output, not a guess.
+_RUNTIME_LS_OUTPUT = (
+    "LLM ENGINE                                        SELECTED    MODEL FORMAT\n"
+    "llama.cpp-mac-arm64-apple-metal-advsimd@2.29.1       ✓            GGUF    \n"
+    "llama.cpp-mac-arm64-apple-metal-advsimd@2.28.2                    GGUF    \n"
+    "mlx-llm-mac-arm64-apple-metal-advsimd@1.11.0         ✓            MLX     \n"
+    "mlx-llm-mac-arm64-apple-metal-advsimd@1.10.1                      MLX     \n"
+)
+
+
+def test_runtime_engines_parses_the_real_table(monkeypatch):
+    monkeypatch.setattr(
+        lmstudio, "_run", lambda *a, **k: _completed(stdout=_RUNTIME_LS_OUTPUT)
+    )
+    engines = lmstudio.runtime_engines()
+    assert len(engines) == 4
+    selected = [e for e in engines if e.selected]
+    assert {e.model_format for e in selected} == {"GGUF", "MLX"}
+    gguf = next(e for e in selected if e.model_format == "GGUF")
+    assert gguf.name == "llama.cpp-mac-arm64-apple-metal-advsimd"
+    assert gguf.version == "2.29.1"
+    mlx = next(e for e in selected if e.model_format == "MLX")
+    assert mlx.version == "1.11.0"

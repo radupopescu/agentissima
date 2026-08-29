@@ -25,6 +25,8 @@ this file.
 | `native` agent loop | `harness/driver_native.py` | All five §4.8 termination paths tested |
 | Metrics | `harness/metrics.py` | §5.1 timing, memory sampler, swap window, process discovery |
 | Model lifecycle | `harness/lmstudio.py` | `lms` load/unload/ps, stage-scoped context manager |
+| Configuration probes | `setup/probe_config.py`, `setup/probe_process.py` | All six `configs/*.yaml` resolved; 31 tests |
+| Environment capture | `harness/environment.py`, `harness/admissibility.py` | §3.1 preconditions verified live; 20 tests |
 
 The harness half runs with no model and no network (43 tests):
 
@@ -52,8 +54,7 @@ Four defects that only a real model exposed, now fixed and covered by tests:
 
 ### Not built
 
-The configuration probes, environment capture, the Stage 0 tasks, the stage runners, results
-output, reporting, and the `pi` driver.
+The Stage 0 tasks, the stage runners, results output, reporting, and the `pi` driver.
 
 ---
 
@@ -257,7 +258,7 @@ model.
 **Done when:** unit tests over synthetic chunk sequences confirm the `t_first` rule and the
 `−1` correction, and a real run produces plausible figures.
 
-### M3 — Configuration probes and environment capture (§2.1, §3)
+### ~~M3 — Configuration probes and environment capture~~ — done and verified
 
 **New files:** `setup/probe_config.py`, `setup/probe_process.py`, `harness/environment.py`,
 `configs/*.yaml`
@@ -293,14 +294,25 @@ model.
   refusal (exact for llama.cpp, silent for MLX by construction), and `peak_memory_bytes` /
   `swap_flag` from §5.2 are the record of what a run actually cost. `harness/admissibility.py`
   holds `classify_declared` and `classify_load_failure`, both covered by unit tests.
-- `probe_process.py` does **not** re-implement process discovery: refactor `metrics.py`'s
-  hint-and-footprint search (§5.2) into a shared helper, then use it here to name the
-  resident inference process and derive `backend_runtime` (name + version) from its command
-  line for `environment.json`. One discovery implementation lives in the codebase.
+- `probe_process.py` derives `backend_runtime` (name + version) for `environment.json` from
+  the resident model's `format` (`lms ps`, `safetensors`/`gguf`) matched against the engine
+  `lms runtime ls` reports selected for that format. An earlier design read the resident
+  process's command line instead, reusing `metrics.py`'s hint-and-footprint search (§5.2); a
+  live verification run showed LM Studio's worker process (`llmworker.js`) names neither
+  engine nor version on either backend, so that design always returned `None, None`. Process
+  discovery in `metrics.py` remains the only source for *memory*, which is a property of the
+  process; `backend_runtime` identity is not.
 - `environment.py` emits `environment.json` and asserts the §3.1 preconditions: AC power
   (`pmset -g batt`), Low Power Mode off (`pmset -g`), exactly one model loaded (`GET
   /v1/models` plus `lms ps`), swap baseline recorded. **A failed precondition aborts the
   session** — no warnings.
+
+**Verified end-to-end** (2026-08-29): LFM-M8 and LFM-G8 each loaded via `lms`, `environment.capture()`
+run live, and `environment.json` inspected — `ac_power`, `low_power_mode`, `backend_runtime`
+(`mlx`/`1.11.0` and `llama.cpp`/`2.29.1`) and `context_length` all correct. The single-resident-model
+precondition was also confirmed to fire: loading a second configuration while the first stayed
+resident raised `PreconditionError` with the expected message. `lms load --context-length` was
+confirmed to actually set the context (answers the open question below).
 
 ### M4 — Stage 0 tasks, results output, stage runner (§9, §10.1)
 
@@ -374,7 +386,7 @@ Not blockers, but each needs an answer recorded in `benchmark.md` when resolved.
 | Is `max_tokens=1024` too tight for reasoning models? | **Mostly resolved, narrowed.** The v1 evidence for raising it was the leading-`/` defect, not the token budget: LFM-M8's T01 was thrashing on false path errors, and under v2 it completes in 3 turns well inside 1024. Keep 1024. **Still genuinely open for the write-heavy tasks** — T03, T07 and T09 require emitting whole file contents through `write_file`, and with 60-91 % of the budget going to reasoning, a 40-line file plausibly will not fit in one turn. Check T03 and T09 specifically before Stage 2B; do not generalise from the retrieval tasks |
 | ~~Is Stage 0 worth keeping?~~ | **Resolved: keep, unchanged.** Reconnaissance showed all six configurations emit valid tool calls with zero formatting errors, so the gate is expected to exclude nothing in the current set. It is retained as a pre-flight check against harness/configuration mismatch — the configuration set is a snapshot, and a future model that cannot call tools would otherwise cost Stage 2A hours to discover. A persistence-style gate was considered and rejected: persistence is a continuous capability already measured by the progress score and the Stage 2A gate, and gating on it would blur gate and measurement. §9 Stage 0 and §1.2 amended accordingly |
 | ~~How is model load time measured?~~ | **Resolved: it is not measured.** Removed from the Stage 1 metric list in §9. §5.1 timings are defined against an already-serving model, and §9.0 loads once per stage precisely to keep load time out of them; the duration of `lms load` would measure LM Studio's loader, not agent work. Time to first token on a loaded model, which is relevant, is already covered by TTFT |
-| Can `lms` set context length at load time? | Determines whether stages can run unattended across configurations |
+| ~~Can `lms` set context length at load time?~~ | **Resolved: yes.** `lms load --context-length 8192` confirmed live: `lms ps` and the returned `LoadedModel.context_length` both report 8192 for both an MLX and a GGUF configuration |
 | ~~Do all six quantisations actually exist?~~ | **Resolved:** all six exist and all six now load. See §3a |
 | ~~How should peak memory be measured?~~ | **Resolved:** dirty + clean from `footprint -p`. Each runtime puts the weights where one standard metric cannot see them — llama.cpp in clean mapped-file pages (invisible to `phys_footprint`), MLX in dirty GPU buffers (invisible to RSS). Summing both columns counts both. Spread 0.03 GiB over three repetitions, against 1.28 GiB for the system-wide delta it replaced. See §5.2 |
 | ~~Does the 2 GiB headroom in §2.2 hold in practice?~~ | **Moot.** §2.2 dropped the arithmetic margin entirely — admissibility is now a metadata check, a load attempt, and §5.2 measurement, so there is no headroom figure left to validate. First real peak-memory figures: llama.cpp Q8_0 2.90-2.93 GiB, MLX 8-bit 4.18 GiB, both at 8K on W05 |
