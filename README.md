@@ -11,6 +11,7 @@ by measuring agent task success rather than token throughput alone.
 | [`doc/benchmark.md`](doc/benchmark.md) | The specification. Authoritative on what is measured and how |
 | [`doc/way-of-working.md`](doc/way-of-working.md) | Methodology and invariants for developing the project |
 | [`doc/implementation-plan.md`](doc/implementation-plan.md) | Remaining work, in pickup-ready detail |
+| [`doc/findings.md`](doc/findings.md) | Empirical findings from real runs — model behaviour, environment quirks |
 
 ---
 

@@ -114,91 +114,11 @@ These gate everything in §4 and are not automatable from here.
 
 ---
 
-## 3a. Reconnaissance findings (2026-08-27, `task_set_version: v2`)
-
-**Not benchmark data.** One shot per task, one context, no environment capture, no repetitions.
-Nothing here may be quoted as a result or written to `results/`. It exists to de-risk M3-M5.
-
-### Artefact mapping — all six §2 rows have a working artefact
-
-Identified by path, which is stable. The key column is a snapshot of what LM Studio derived
-from the currently installed set and **will change** if models are added or removed (§2.1).
-
-| §2 ID | Path (stable) | Size | Key at time of writing | Notes |
-|---|---|---|---|---|
-| LFM-M8 | `LiquidAI/LFM2.5-2.6B-MLX-8bit` | 2.88 GB | `lfm2.5-2.6b-mlx@8bit` | replaced an `mlx-community` build that crashed the MLX backend on load; that build has been removed |
-| LFM-G8 | `LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-Q8_0.gguf` | 2.87 GB | `lfm2.5-2.6b@q8_0` | |
-| LFM-GQ4 | `LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-QAD-Q4_0.gguf` | 1.59 GB | `lfm2.5-2.6b@q4_0` | **confirmed QAD**, not ordinary Q4_0 |
-| LFM-BF16 | `LiquidAI/LFM2.5-2.6B-MLX-bf16` | 5.41 GB | `lfm2.5-2.6b-mlx@bf16` | |
-| BON-M2 | `prism-ml/Ternary-Bonsai-8B-mlx-2bit` | 2.32 GB | `ternary-bonsai-8b-mlx` | |
-| BON-G2 | `prism-ml/Ternary-Bonsai-8B-gguf/Ternary-Bonsai-8B-Q2_0_g64.gguf` | 2.31 GB | `ternary-bonsai-8b` | unsuffixed key: only one Bonsai GGUF is installed. Installing a second renames this one. Runtime reports quantisation as `null` |
-
-Ternary-Bonsai-8B reports architecture `qwen3`.
-
-### Context ceilings differ within a model
-
-| Configuration | `maxContextLength` |
-|---|---|
-| LFM Q8_0, 8-bit, bf16 | 131072 |
-| LFM QAD Q4_0 | **128000** |
-| Bonsai, both | **65536** |
-
-Confirms §2.1's refusal to assume: two quantisations of one model do not share a ceiling.
-Bonsai cannot reach 128K, so Stage 4's 64K is its maximum.
-
-### Behaviour — W01 / W05 / T01 at 8K
-
-| Configuration | v1 | **v2** | mean progress | gen tok/s | overhead | peak (v1, per-process) |
-|---|---|---|---|---|---|---|
-| LFM-M8 (MLX 8-bit) | 2/3 | **3/3** | 4.0 | 56 | 306 ms | 4.6 GiB |
-| LFM-BF16 (MLX) | 2/3 | **3/3** | 4.0 | 31 | 468 ms | 6.4 GiB |
-| LFM-GQ4 (QAD Q4_0) | 2/3 | **3/3** | 4.0 | 86 | 34 ms | — |
-| LFM-G8 (Q8_0) | 1/3 | 2/3 | 3.3 | 53 | 37 ms | — |
-| BON-M2 | 0/3 | 0/3 | 1.0 | 64 | 255 ms | 3.8 GiB |
-| BON-G2 | 0/3 | 0/3 | 1.0 | 38 | 44 ms | 1.2 GiB |
-
-v1 scores were taken before the leading-`/` fix and are shown only to size its effect. The peak
-column predates the §5.2 change and is not comparable across runtimes; ignore it.
-
-- **Zero invalid tool calls anywhere, in either version.** Tool-call *formatting* is not the
-  bottleneck for any configuration, which is not what §1.2 predicted. Stage 0 as specified will
-  gate nothing in this set; kept as a pre-flight check — see the resolved question in §6.
-- **T01 now passes on all four LFM configurations, in 3 tool calls each.** Under v1 every one
-  of them failed it. That was the harness, not the models.
-- **Bonsai is unchanged at 0/3** and its failure mode never touched path handling: 0-1 tool
-  calls, then an answer from parametric knowledge without exploring. Both builds return
-  byte-identical answers, which is also a useful determinism signal for the harness. Stage 0
-  would pass this behaviour.
-- **Reasoning share is a per-model property**: LFM 60-91 %, Bonsai 0 %. It drives agent latency
-  far more than raw tok/s and belongs in the §10.3 table.
-- **Per-request overhead is ~10x higher on MLX** (255-468 ms) than llama.cpp (34-44 ms). Since
-  `prompt_tps` subtracts `overhead_median`, this bears directly on the runtime question.
-- LFM-G8 on W01 is the one remaining LFM failure: 33 calls, `empty_answer`, where LFM-GQ4
-  does it in 6. Single-shot, so indistinguishable from variance — see below.
-
-### Run-to-run variance at `temperature=0` is real
-
-T02 on LFM-M8, varying only `max_tokens`: pass at 1024, **fail at 2048**, pass at 4096. A
-budget effect cannot produce that shape. This is the near-but-not-bitwise determinism §4.2
-warns about, showing up as an outcome flip, and it is the first hard evidence that §9.1's three
-repetitions and the `flaky` flag are load-bearing rather than ceremonial.
-
-### Harness defects found and fixed
-
-| Defect | Fix |
-|---|---|
-| LFM2.5 emits `reasoning_content` before any `content`; TTFT measured from first *content* folded the whole reasoning phase into prefill and inflated gen tok/s | `t_first` counts reasoning; `reasoning_tokens` recorded separately (§5.1) |
-| Process discovery matched the Electron renderer instead of the backend | Hints target the backend; ranked by footprint, not RSS (§5.2) |
-| Process discovery ran immediately after load; llama.cpp allocates lazily and was rejected as too small | Discover **after** overhead calibration (§5.2) |
-| `max_tokens=1` made LM Studio finish without emitting a token delta, so overhead calibration silently returned 0.0 | `max_tokens=8`; no timed sample now fails loudly (§5.1) |
-| W01 failed a *correct* answer that named £85 and identified £72 as superseded | The decoy may appear if marked superseded (§7.1) |
-| A turn with neither tool calls nor content was graded as an empty `final_answer` | New `empty_answer` termination reason (§4.8) |
-| **A leading `/` escaped the sandbox and was refused as "outside working directory"** — false, since the file is inside. Turn logging showed LFM-M8 run `ls -la`, see `AGENTS.md`, be told `/AGENTS.md` was outside, and thrash for ten turns | Leading `/` is root-anchored within the sandbox; `..` still refused (§4.6). **Cost every LFM configuration the whole of T01** |
-| **Peak memory was not comparable across runtimes.** llama.cpp `mmap`s its weights into clean pages, which `phys_footprint` excludes (227 MB for a 2.87 GB artefact); MLX allocates dirty GPU buffers, which RSS excludes (707 MB for a 2.88 GB artefact). Each metric is blind to one runtime | Dirty + clean from `footprint -p` counts both (§5.2). A system-wide `vm_stat` delta was tried first and rejected: unbiased, but 1.54-2.82 GiB across six runs of one configuration |
-| **Model identity was tied to LM Studio's `modelKey`, which is not stable.** The key is derived from the installed set (`@<quant>` appended only to disambiguate), and `lms load` matches it as a *substring*: `lms load lfm2.5-2.6b` matches four artefacts and under `--yes` loads the first — an MLX build — warning only on stdout, which the harness discarded on success | Models are identified by path; `resolve()` requires a unique exact match before the CLI is invoked, and the resident artefact is verified by path after load (§2.1) |
-| **The GGUF metadata reader could not read either artefact.** Reads were not bounds-checked — only the 4-byte value type was — so any string or array straddling a 1 MB chunk boundary failed on a valid file; the alignment retry then walked the whole 2.3 GB artefact to EOF, at `buf += chunk` (quadratic). Minutes per file, then failure | Every read goes through `ensure()`, with plausibility bounds on string and array lengths so a misaligned decode fails immediately. `bytearray.extend` replaces the concatenation. Both artefacts now parse in 0.4 s |
-| **`n_kv_heads` read as 0 for every LFM2 GGUF**, blocking all three GGUF configurations. `attention.head_count_kv` is a **per-layer array** there — `[0, 0, 8, 0, 0, 8, ...]`, zero for each conv block — and the reader took element 0 | Arrays are preserved and the distinct non-zero value taken (§2.2 caveat). GGUF and MLX geometry now agree independently: LFM 8/8/64, Bonsai 36/8/128 |
-| **KV probe measured nothing for MLX.** It varied *declared* context, which llama.cpp allocates to at load but MLX does not — MLX allocates on first touch, sized to the sequence, and the warm-up was 2 tokens. Reported 0.058 and 0.0005 bytes/element, i.e. a 0.00 GiB KV cache that **passed admissibility at every context**, silently | Two slopes, larger wins: declared context (eager) and prompt length (lazy). A geometry cross-check now refuses any measurement implying <0.25 or >8 bytes/element, so this failure mode is loud (§2.2) |
+Reconnaissance findings from before M3-M5 were built, and every empirical finding since, now
+live in [`findings.md`](findings.md) — including the six-configuration artefact mapping, the
+context-ceiling and reasoning-share data, and the harness defects that reconnaissance run
+exposed. Kept there rather than here because a finding is not "remaining work"; this document
+tracks only what still needs building.
 
 ---
 
@@ -375,8 +295,8 @@ took ~18 s, all of it load and overhead calibration, none of it task execution).
 reconnaissance-style probing — `results/<config_id>-8192/raw/stage0.jsonl`, one directory per
 configuration. All six: 9/9 valid tool calls, `tool_capable=True`. `backend_runtime` resolved
 correctly for every one (`llama.cpp`/2.29.1 for the three GGUF configurations, `mlx`/1.11.0 for
-the three MLX ones), confirming the M3 backend-identity fix (§3a's defect table) holds across
-the whole matrix, not only the one configuration it was diagnosed against. This is real §9
+the three MLX ones), confirming the M3 backend-identity fix (`findings.md`'s defect table) holds
+across the whole matrix, not only the one configuration it was diagnosed against. This is real §9
 Stage 0 data — kept under `results/`, not deleted as scratch, per `.gitignore`'s own note that
 the raw JSONL is the record.
 
@@ -509,7 +429,7 @@ Not blockers, but each needs an answer recorded in `benchmark.md` when resolved.
 | ~~Is Stage 0 worth keeping?~~ | **Resolved: keep, unchanged.** Reconnaissance showed all six configurations emit valid tool calls with zero formatting errors, so the gate is expected to exclude nothing in the current set. It is retained as a pre-flight check against harness/configuration mismatch — the configuration set is a snapshot, and a future model that cannot call tools would otherwise cost Stage 2A hours to discover. A persistence-style gate was considered and rejected: persistence is a continuous capability already measured by the progress score and the Stage 2A gate, and gating on it would blur gate and measurement. §9 Stage 0 and §1.2 amended accordingly |
 | ~~How is model load time measured?~~ | **Resolved: it is not measured.** Removed from the Stage 1 metric list in §9. §5.1 timings are defined against an already-serving model, and §9.0 loads once per stage precisely to keep load time out of them; the duration of `lms load` would measure LM Studio's loader, not agent work. Time to first token on a loaded model, which is relevant, is already covered by TTFT |
 | ~~Can `lms` set context length at load time?~~ | **Resolved: yes.** `lms load --context-length 8192` confirmed live: `lms ps` and the returned `LoadedModel.context_length` both report 8192 for both an MLX and a GGUF configuration |
-| ~~Do all six quantisations actually exist?~~ | **Resolved:** all six exist and all six now load. See §3a |
+| ~~Do all six quantisations actually exist?~~ | **Resolved:** all six exist and all six now load. See `findings.md` |
 | ~~How should peak memory be measured?~~ | **Resolved:** dirty + clean from `footprint -p`. Each runtime puts the weights where one standard metric cannot see them — llama.cpp in clean mapped-file pages (invisible to `phys_footprint`), MLX in dirty GPU buffers (invisible to RSS). Summing both columns counts both. Spread 0.03 GiB over three repetitions, against 1.28 GiB for the system-wide delta it replaced. See §5.2 |
 | ~~Does the 2 GiB headroom in §2.2 hold in practice?~~ | **Moot.** §2.2 dropped the arithmetic margin entirely — admissibility is now a metadata check, a load attempt, and §5.2 measurement, so there is no headroom figure left to validate. First real peak-memory figures: llama.cpp Q8_0 2.90-2.93 GiB, MLX 8-bit 4.18 GiB, both at 8K on W05 |
 | Do LM Studio's memory-refusal error messages match `classify_load_failure`'s patterns? | **Untested against a real refusal.** No §2 pair on this 16 GiB machine actually triggers `oversized`; the string patterns ("out of memory", "failed to allocate", "guardrail", …) are unit-tested against assumed wording only. A real refusal with different phrasing surfaces as a plain `LMStudioError` rather than `oversized` — loud, but mislabelled. Capture the actual message the first time a stage hits one |

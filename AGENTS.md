@@ -11,6 +11,7 @@ changing anything under `harness/` or `fixtures/`.
 | [`doc/benchmark.md`](doc/benchmark.md) | The specification. Authoritative on what is measured and how |
 | [`doc/way-of-working.md`](doc/way-of-working.md) | How to develop here: methodology, invariants, the checklist after any change |
 | [`doc/implementation-plan.md`](doc/implementation-plan.md) | Remaining work and the interfaces new code must fit |
+| [`doc/findings.md`](doc/findings.md) | Empirical findings from real runs — model behaviour, environment quirks, not spec and not a defect to fix |
 | [`README.md`](README.md) | How to run what exists |
 
 ## One thing to know before you touch anything
