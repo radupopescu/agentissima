@@ -5,6 +5,15 @@ from it — `way-of-working.md`'s "reports regenerate from JSONL only,"
 including `flaky` (§9.1), which `harness/stages.py` deliberately leaves
 `null` at write time because deciding it needs every repetition of a task.
 
+**Every file under a session's `raw/` is scanned and pooled, unconditionally
+— there is no name filter.** A run that must never be reported (e.g. one
+made under a since-fixed environment bug) does not belong under `raw/` at
+all; move it to a sibling directory such as `archive/` instead of renaming
+it within `raw/`. This was found the hard way: a LFM-GQ4 Stage 2A run made
+before an LM Studio bug was fixed was renamed to `stage2a-<description
+>.jsonl` still inside `raw/`, and silently got pooled back into the very
+report it was meant to be excluded from, doubling the run count.
+
 Not built here: §10.4's "reporting the three questions" is conclusions
 written by a person once real multi-configuration data exists — this module
 produces the tables that conclusion is drawn from, not the conclusion.
