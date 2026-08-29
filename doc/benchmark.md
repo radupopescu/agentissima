@@ -438,34 +438,15 @@ validity. `malformed_calls` consequently means *varying* invalid calls — the m
 format arguments — which is a different finding from being stuck, and the two are worth
 distinguishing in failure analysis.
 
-`server_error` is not §4.5's no-repair rule being bent: that rule is about not papering over
-*the model's* mistakes — a malformed tool call is still recorded as invalid and left alone. A
-mid-stream `APIError` is the *server* failing to complete a response at all, an infrastructure
-fault rather than model output, so ending just that run and recording it — rather than either
-retrying it or letting the exception crash the whole stage and lose every other run already
-in progress — is a robustness property of the harness, not a measurement decision about the
-model. A live Stage 2A run hit this for real: LFM-GQ4's llama.cpp backend returned a 500
-("Invalid diff: ... not found at start of ...") partway through streaming a long tool-call
-argument, and the uncaught `openai.APIError` took the whole process down before this fix. It
-reproduced deterministically — 3/3 repetitions, byte-identical message — on three tasks whose
-`run_command` arguments embed a Python one-liner with a single-quoted `open(...)` call; LM
-Studio's own server log named the responsible subsystem as `Engine protocol predict stream`.
+`server_error` covers a backend failure mid-stream (`openai.APIError`), not a malformed response
+from the model. §4.5's no-repair rule applies to the model's mistakes; a mid-stream server
+failure is an infrastructure fault, so the run ends and is recorded rather than retried or left
+to crash the whole stage.
 
-**Root cause found and fixed at the environment level, not in this codebase.** LM Studio's
-`~/.lmstudio/settings.json` had `useLlamaCppEngineProtocolRuntime3: true` — the developer
-setting behind [lmstudio-ai/lmstudio-bug-tracker#1922](https://github.com/lmstudio-ai/lmstudio-bug-tracker/issues/1922),
-a known bug in the same "Engine Protocol runtime" subsystem that corrupts streamed tool-call
-arguments (different exact message, same failure family and code path). Disabling it in LM
-Studio (Settings → Developer) is the documented workaround. This is a machine setting, not
-tracked in `environment.json` — a genuine gap, since it materially affects backend reliability —
-and not added here; if it recurs after the setting change, that would be worth capturing as an
-`environment.json` field. `server_error` handling in `native` is kept regardless: it is a
-legitimate defensive property independent of this one root cause, and any future backend fault
-of this shape should degrade the same way.
-
-`server_error` is deliberately excluded from §4.2's degenerate-decoding rate — a backend crash
-is not something recommended-default sampling could plausibly fix, unlike a repetition loop —
-and tracked on its own instead (`harness/report.py`'s `server_error_rate`).
+`server_error` is excluded from §4.2's degenerate-decoding rate: a backend crash is not
+something recommended-default sampling would fix. It is tracked separately
+(`harness/report.py`'s `server_error_rate`). See [`findings.md`](findings.md) for a live
+instance of this and its root cause.
 
 ---
 
@@ -900,18 +881,16 @@ compaction experiment:
 
 Nothing in Stage 5B feeds the controlled comparison.
 
-What each part actually requires, recorded so it's clear what runs automatically versus what's
-an operator decision:
+What each part needs:
 
 - **Alternative quantisations** need no new code: `config_id` is already a free parameter, so
   this is running the existing stages against a configuration outside the primary six.
-- **Recommended-default sampling** only runs once the §4.2 trigger has actually fired —
-  `harness/report.py`'s `is_degenerate_triggered` checks raw records for it (repetition loops,
-  empty completions, or a malformed-call/timeout termination, at >20% of a configuration's agent
-  runs), but nothing runs the recommended-sampling pass automatically. It's an operator action
-  once the detector says so, not a pipeline step — there is nothing to trigger it against until
-  real Stage 2A/2B data exists for a configuration.
-- **The context-compaction experiment** is the one part built as a runnable stage:
+- **Recommended-default sampling** runs once the §4.2 trigger fires. `harness/report.py`'s
+  `is_degenerate_triggered` checks raw records for it (repetition loops, empty completions, or a
+  malformed-call/timeout termination, at >20% of a configuration's agent runs). The sampling pass
+  itself is not automatic — it's an operator action once the detector fires, and there is nothing
+  to trigger it against until real Stage 2A/2B data exists.
+- **The context-compaction experiment** is built as a runnable stage:
   `harness/stages.py`'s `run_stage5b_compact()`, using `NativeDriver(history_mode="compact")` —
   see §4.1's `native-compact` row. Not part of `run_full()`; run separately, since it never
   feeds the controlled comparison.
