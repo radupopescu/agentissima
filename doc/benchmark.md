@@ -807,6 +807,18 @@ All tool-capable configurations, 3 repetitions per task. **180 runs.**
 mean progress score **≥2.5**. Configurations that fail are reported with their W results and go
 no further.
 
+Neither half of that says how 3 per-task repetitions collapse into one task-level pass/fail, or
+what the mean is taken over. Resolved (`harness/stages.py`'s `run_stage2a`):
+
+- A task counts toward "3 of 10" on a **strict majority of its repetitions** (≥2 of 3) — the
+  standard resolution of a repeated binary trial, and well-defined here since 3 is odd.
+- **Mean progress score** is the mean over every included run (every repetition of every task
+  that was not `min_context`-skipped), not a per-task mean of means. With uniform repetitions
+  per task the two are the same figure; this is simpler when they are not.
+- A task skipped for `min_context` contributes no runs and is excluded from both halves of the
+  gate — it is not solvable at this context by construction, and scoring it as a failure would
+  understate a configuration that is otherwise capable at a context it wasn't given.
+
 ### Stage 2B — Suite T at 8K
 
 Survivors of the 2A gate only, 3 repetitions per task.

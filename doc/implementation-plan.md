@@ -27,9 +27,9 @@ this file.
 | Model lifecycle | `harness/lmstudio.py` | `lms` load/unload/ps, stage-scoped context manager |
 | Configuration probes | `setup/probe_config.py`, `setup/probe_process.py` | All six `configs/*.yaml` resolved; 31 tests |
 | Environment capture | `harness/environment.py`, `harness/admissibility.py` | §3.1 preconditions verified live; 20 tests |
-| Stage 0 + resumable stage runner | `harness/tasks/smoke.py`, `harness/results.py`, `harness/stages.py` | Verified live against LFM-M8, incl. resume; 13 tests |
+| Stage 0 + resumable stage runner + Stage 2A gate | `harness/tasks/smoke.py`, `harness/results.py`, `harness/stages.py` | Stage 0 verified live against all six configs; Stage 2A gate unit-tested only; 20 tests |
 
-The harness half runs with no model and no network (118 tests):
+The harness half runs with no model and no network (126 tests):
 
 ```sh
 .venv/bin/python -m harness.gates
@@ -55,8 +55,9 @@ Four defects that only a real model exposed, now fixed and covered by tests:
 
 ### Not built
 
-The Stage 2A/2B-specific gate, the Stage 1 raw-inference corpus, reporting, and the `pi`
-driver.
+The Stage 1 raw-inference corpus, reporting, and the `pi` driver. Stage 2A/2B are not yet run
+(the 2A gate is built and unit-tested but not exercised live — §4 M4b; Stage 2B needs no gate
+of its own beyond 2A's survivors, and is just `run_stage()` against `SUITE_T`).
 
 ---
 
@@ -374,11 +375,26 @@ the whole matrix, not only the one configuration it was diagnosed against. This 
 Stage 0 data — kept under `results/`, not deleted as scratch, per `.gitignore`'s own note that
 the raw JSONL is the record.
 
-**Not yet built** (left for when Stage 2A is actually attempted): the Stage 2A-specific gate
-(≥3/10 passes **or** mean progress ≥2.5 — `run_stage()` is generic enough to take this as a
-caller-supplied check once written) and an explicit `min_context` skip (Stage 0's tasks all
-declare `min_context=8192`, equal to the only context Stage 0 runs at, so nothing yet exercises
-skipping a task whose `min_context` exceeds the stage's context).
+### ~~M4b — the Stage 2A gate and the `min_context` skip~~ — built and unit-tested
+
+`run_stage()` gained the `min_context` skip it was missing: a task whose `min_context` exceeds
+the stage's `context_length` is excluded entirely — no runs, no records, and not scored as a
+failure — recorded on `StageOutcome.skipped_min_context`. Nothing in Stage 0 exercised this
+(all three tasks declare `min_context=8192`, equal to the only context Stage 0 runs at), so it
+is covered by `tests/test_stages.py` against a synthetic mixed-context task pair, not by a live
+run.
+
+`run_stage2a()` calls `run_stage()` against `SUITE_W` at 3 repetitions and applies the gate
+recorded in `benchmark.md` §9 Stage 2A: majority-vote per task (≥2 of 3 repetitions), mean
+progress over every included run, either condition sufficient to proceed. The arithmetic is
+split into `_evaluate_stage2a(stage: StageOutcome)`, a pure function over records, so the gate's
+edge cases — majority vs minority, pass-count-alone, mean-alone, neither, and a
+`min_context`-skipped task correctly excluded rather than counted as failing — are unit-tested
+directly against synthetic records without driving all ten Suite W tasks through a fake client.
+
+**Not yet run live.** Stage 2A is 180 runs, 6-12 hours (§9.2) — a deliberate, separate action,
+not something to kick off incidentally while finishing the runner. The CLI is ready:
+`python -m harness.stages stage2a <config_id>`.
 
 ### M5 — Stage 1 raw-inference corpus (§9 Stage 1)
 

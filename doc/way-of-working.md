@@ -121,12 +121,13 @@ never enters a benchmark run.
 
 Built and verified without a model: fixtures, sandbox, tools, both task suites, scoring,
 grading, the §8 gates, the LM Studio client, the `native` agent loop, the metrics layer, model
-lifecycle control, the configuration probes, environment capture, the Stage 0 tasks, and a
-resumable stage runner.
+lifecycle control, the configuration probes, environment capture, the Stage 0 tasks, a resumable
+stage runner, and the Stage 2A gate (unit-tested; not yet run live — see below).
 
 Verified end-to-end against a real model: `python -m harness.smoke` (one task); `python -m
-harness.stages stage0 <config_id>` (a full Stage 0 run, including resume).
+harness.stages stage0 <config_id>` (a full Stage 0 run, including resume) — run for real
+against all six §2 configurations, all tool-capable.
 
-Not built: the Stage 2A/2B-specific gate, the Stage 1 raw-inference corpus, reporting, and the
-`pi` driver. No benchmark stage past Stage 0 can be run yet. See
-[`implementation-plan.md`](implementation-plan.md).
+Not built: the Stage 1 raw-inference corpus, reporting, and the `pi` driver. Stage 2A/2B are
+buildable (`python -m harness.stages stage2a <config_id>`) but not yet attempted live — 180 runs,
+6-12 hours, a deliberate separate action. See [`implementation-plan.md`](implementation-plan.md).

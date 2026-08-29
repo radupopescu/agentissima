@@ -7,6 +7,7 @@ are stubbed so nothing here touches a real backend.
 
 from __future__ import annotations
 
+import dataclasses
 import types
 from contextlib import contextmanager
 
@@ -210,3 +211,115 @@ def test_a_mismatched_task_set_version_on_resume_raises(tmp_path, monkeypatch):
     )
     with pytest.raises(stages.SessionMismatchError):
         stages.run_stage0("FAKE", results_dir=tmp_path)
+
+
+# --- min_context skip --------------------------------------------------------
+
+
+def test_a_task_above_the_stage_context_is_skipped_not_run(tmp_path, monkeypatch):
+    _patch_common(monkeypatch)
+    # One normal task, one whose min_context exceeds the 8192 this stage runs
+    # at. Only the normal task's turns are scripted — if the high-context task
+    # were run anyway, the fake client would raise on running out of turns.
+    normal = STAGE0_TASKS[0]
+    too_high = dataclasses.replace(STAGE0_TASKS[1], min_context=65536)
+    monkeypatch.setattr(
+        stages, "LMStudioClient",
+        _client_factory(FakeClient(_turns_for([True]))),
+    )
+
+    outcome = stages.run_stage(
+        "FAKE", [normal, too_high], stage_name="mixed", suite="0",
+        context_length=8192, repetitions=1, results_dir=tmp_path,
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.skipped_min_context == [too_high.id]
+    assert {r["task_id"] for r in outcome.records} == {normal.id}
+
+
+# --- Stage 2A gate -------------------------------------------------------
+
+
+def _stage_with(records: list[dict]) -> stages.StageOutcome:
+    return stages.StageOutcome(status="completed", records=records)
+
+
+def _record(task_id: str, repetition: int, *, passed: bool, progress: int) -> dict:
+    return {"task_id": task_id, "passed": passed, "progress_score": progress}
+
+
+def test_a_task_passes_on_majority_of_its_repetitions():
+    # W01: 2 of 3 pass -> counts as passed even though not unanimous.
+    records = [
+        _record("W01", 1, passed=True, progress=4),
+        _record("W01", 2, passed=True, progress=4),
+        _record("W01", 3, passed=False, progress=1),
+    ]
+    outcome = stages._evaluate_stage2a(_stage_with(records))
+    assert outcome.tasks_total == 1
+    assert outcome.tasks_passed == 1
+
+
+def test_a_task_fails_on_minority_of_its_repetitions():
+    records = [
+        _record("W01", 1, passed=True, progress=4),
+        _record("W01", 2, passed=False, progress=1),
+        _record("W01", 3, passed=False, progress=1),
+    ]
+    outcome = stages._evaluate_stage2a(_stage_with(records))
+    assert outcome.tasks_passed == 0
+
+
+def test_proceeds_on_pass_count_alone():
+    records = []
+    for task_id in ("W01", "W02", "W03"):
+        records += [_record(task_id, r, passed=True, progress=4) for r in (1, 2, 3)]
+    for task_id in ("W04", "W05", "W06", "W07", "W08", "W09", "W10"):
+        records += [_record(task_id, r, passed=False, progress=0) for r in (1, 2, 3)]
+
+    outcome = stages._evaluate_stage2a(_stage_with(records))
+    assert outcome.tasks_passed == 3
+    assert outcome.mean_progress < 2.5
+    assert outcome.proceeds is True
+
+
+def test_proceeds_on_mean_progress_alone():
+    records = []
+    for task_id in ("W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10"):
+        records += [_record(task_id, r, passed=False, progress=3) for r in (1, 2, 3)]
+
+    outcome = stages._evaluate_stage2a(_stage_with(records))
+    assert outcome.tasks_passed == 0
+    assert outcome.mean_progress == 3.0
+    assert outcome.proceeds is True
+
+
+def test_neither_gate_condition_fails_to_proceed():
+    records = []
+    for task_id in ("W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10"):
+        records += [_record(task_id, r, passed=False, progress=1) for r in (1, 2, 3)]
+
+    outcome = stages._evaluate_stage2a(_stage_with(records))
+    assert outcome.tasks_passed == 0
+    assert outcome.mean_progress == 1.0
+    assert outcome.proceeds is False
+
+
+def test_min_context_skipped_tasks_are_excluded_not_scored_as_failing():
+    """A task with no records (skipped) must not drag the mean down or count
+    against tasks_total — it wasn't run, so it isn't a failure."""
+    records = [_record("W01", r, passed=True, progress=4) for r in (1, 2, 3)]
+    stage = stages.StageOutcome(status="completed", records=records, skipped_min_context=["W02"])
+
+    outcome = stages._evaluate_stage2a(stage)
+    assert outcome.tasks_total == 1
+    assert outcome.mean_progress == 4.0
+
+
+def test_gate_reports_zero_when_the_stage_did_not_complete():
+    stage = stages.StageOutcome(status="oversized", detail="does not fit")
+    outcome = stages._evaluate_stage2a(stage)
+    assert outcome.proceeds is False
+    assert outcome.tasks_total == 0
+    assert outcome.mean_progress == 0.0

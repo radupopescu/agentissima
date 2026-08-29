@@ -11,7 +11,15 @@ directory and `results.existing_keys()` on that stage's own raw file does the
 actual resume work — no separate flag. The one risk that creates — resuming
 into a session captured under a different harness revision or
 `task_set_version` and silently pooling incomparable runs — is guarded by
-`_check_environment_matches` before anything new is written.
+`_check_task_set_version_matches` before anything new is written.
+
+A task whose `min_context` exceeds the stage's `context_length` is skipped
+entirely — no runs, no records — rather than scored as a failure; it isn't
+solvable at this context by construction, and counting it as a fail would
+understate a configuration that is otherwise capable at a context it hasn't
+been given (§9 Stage 4's "larger context is not assumed to be better" cuts
+both ways: a task also should not be penalised for a context it wasn't run
+at).
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ from .client import LMStudioClient
 from .driver_native import NativeDriver
 from .metrics import MemorySampler, SwapWindow, find_inference_pid
 from .runner import run_task
+from .tasks import SUITE_W
 from .tasks.smoke import STAGE0_TASKS
 from .types import Task
 from .version import TASK_SET_VERSION
@@ -40,6 +49,20 @@ STAGE_IDENTIFIER = "bench"
 # doc/benchmark.md §9 Stage 0 for the reasoning.
 STAGE0_REPETITIONS = 3
 STAGE0_GATE_RATE = 2 / 3
+
+# §9 Stage 2A: "passes ≥3 of 10 on Suite W or has a mean progress score
+# ≥2.5" over 3 repetitions per task. Neither half of that OR says how 3
+# per-task repetitions collapse into one task-level pass/fail, so a task
+# counts toward "3 of 10" on a strict majority of its repetitions (≥2 of 3) —
+# the standard resolution of a repeated binary trial, and well-defined here
+# since 3 is odd. `mean progress score` is the mean over every included run
+# (all repetitions of every task that was not min_context-skipped), not a
+# per-task mean of means — with uniform repetitions per task the two
+# coincide, and this is simpler when they don't. See doc/benchmark.md §9
+# Stage 2A for the recorded reasoning.
+STAGE2A_REPETITIONS = 3
+STAGE2A_MIN_PASSES = 3
+STAGE2A_MIN_MEAN_PROGRESS = 2.5
 
 
 class SessionMismatchError(RuntimeError):
@@ -55,6 +78,9 @@ class StageOutcome:
     raw_path: Path | None = None
     records: list[dict] = field(default_factory=list)
     detail: str | None = None
+    # Task IDs excluded because task.min_context > context_length (not run,
+    # not scored as a failure).
+    skipped_min_context: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -62,6 +88,15 @@ class Stage0Outcome:
     tool_capable: bool
     valid_runs: int
     total_runs: int
+    stage: StageOutcome
+
+
+@dataclass
+class Stage2AOutcome:
+    proceeds: bool
+    tasks_passed: int
+    tasks_total: int
+    mean_progress: float
     stage: StageOutcome
 
 
@@ -212,7 +247,13 @@ def run_stage(
             pid = found[0] if found else None
             driver = NativeDriver(client=client, overhead_s=overhead)
 
+            skipped_min_context = [
+                task.id for task in tasks if task.min_context > context_length
+            ]
+
             for task in tasks:
+                if task.min_context > context_length:
+                    continue
                 for repetition in range(1, repetitions + 1):
                     key = (config_id, suite, task.id, repetition)
                     if key in existing:
@@ -238,6 +279,7 @@ def run_stage(
         session_dir=session_dir,
         raw_path=raw_path,
         records=results.read_records(raw_path),
+        skipped_min_context=skipped_min_context,
     )
 
 
@@ -269,6 +311,63 @@ def run_stage0(
     )
 
 
+def _task_passed_by_majority(records: list[dict]) -> bool:
+    passes = sum(1 for r in records if r["passed"])
+    return passes * 2 > len(records)
+
+
+def _evaluate_stage2a(stage: StageOutcome) -> Stage2AOutcome:
+    """The gate's pure arithmetic, over whatever records `run_stage` wrote —
+    separated from running the stage so it can be exercised directly against
+    synthetic records, without driving all ten Suite W tasks through a model
+    or a fake client."""
+    if stage.status != "completed":
+        return Stage2AOutcome(
+            proceeds=False, tasks_passed=0, tasks_total=0, mean_progress=0.0, stage=stage
+        )
+
+    by_task: dict[str, list[dict]] = {}
+    for record in stage.records:
+        by_task.setdefault(record["task_id"], []).append(record)
+
+    tasks_total = len(by_task)
+    tasks_passed = sum(1 for recs in by_task.values() if _task_passed_by_majority(recs))
+    mean_progress = (
+        sum(r["progress_score"] for r in stage.records) / len(stage.records)
+        if stage.records
+        else 0.0
+    )
+
+    proceeds = tasks_passed >= STAGE2A_MIN_PASSES or mean_progress >= STAGE2A_MIN_MEAN_PROGRESS
+    return Stage2AOutcome(
+        proceeds=proceeds,
+        tasks_passed=tasks_passed,
+        tasks_total=tasks_total,
+        mean_progress=mean_progress,
+        stage=stage,
+    )
+
+
+def run_stage2a(
+    config_id: str,
+    context_length: int = 8192,
+    *,
+    results_dir: Path = RESULTS_DIR,
+    configs_dir: Path | None = None,
+) -> Stage2AOutcome:
+    stage = run_stage(
+        config_id,
+        SUITE_W,
+        stage_name="stage2a",
+        suite="W",
+        context_length=context_length,
+        repetitions=STAGE2A_REPETITIONS,
+        results_dir=results_dir,
+        configs_dir=configs_dir,
+    )
+    return _evaluate_stage2a(stage)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="harness.stages")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -277,6 +376,10 @@ def main(argv: list[str] | None = None) -> int:
     stage0.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
     stage0.add_argument("--context", type=int, default=8192)
 
+    stage2a = sub.add_parser("stage2a", help="run §9 Stage 2A: Suite W at 8K")
+    stage2a.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
+    stage2a.add_argument("--context", type=int, default=8192)
+
     args = parser.parse_args(argv)
 
     if args.command == "stage0":
@@ -284,6 +387,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"status: {outcome.stage.status}")
         if outcome.stage.status == "completed":
             print(f"tool-capable: {outcome.tool_capable} ({outcome.valid_runs}/{outcome.total_runs} valid)")
+            print(f"raw records: {outcome.stage.raw_path}")
+            return 0
+        print(outcome.stage.detail)
+        return 1
+
+    if args.command == "stage2a":
+        outcome = run_stage2a(args.config_id, context_length=args.context)
+        print(f"status: {outcome.stage.status}")
+        if outcome.stage.status == "completed":
+            print(
+                f"proceeds to 2B: {outcome.proceeds} "
+                f"({outcome.tasks_passed}/{outcome.tasks_total} tasks passed, "
+                f"mean progress {outcome.mean_progress:.2f})"
+            )
+            if outcome.stage.skipped_min_context:
+                print(f"skipped (min_context): {', '.join(outcome.stage.skipped_min_context)}")
             print(f"raw records: {outcome.stage.raw_path}")
             return 0
         print(outcome.stage.detail)
