@@ -365,6 +365,15 @@ readable, model unloaded afterwards. Re-running the identical command resumed co
 file stayed at 9 records and no new tool call was made (confirmed by timing — the second run
 took ~18 s, all of it load and overhead calibration, none of it task execution).
 
+**Stage 0 has now actually been run for all six §2 configurations** (2026-08-29), not just
+reconnaissance-style probing — `results/<config_id>-8192/raw/stage0.jsonl`, one directory per
+configuration. All six: 9/9 valid tool calls, `tool_capable=True`. `backend_runtime` resolved
+correctly for every one (`llama.cpp`/2.29.1 for the three GGUF configurations, `mlx`/1.11.0 for
+the three MLX ones), confirming the M3 backend-identity fix (§3a's defect table) holds across
+the whole matrix, not only the one configuration it was diagnosed against. This is real §9
+Stage 0 data — kept under `results/`, not deleted as scratch, per `.gitignore`'s own note that
+the raw JSONL is the record.
+
 **Not yet built** (left for when Stage 2A is actually attempted): the Stage 2A-specific gate
 (≥3/10 passes **or** mean progress ≥2.5 — `run_stage()` is generic enough to take this as a
 caller-supplied check once written) and an explicit `min_context` skip (Stage 0's tasks all
