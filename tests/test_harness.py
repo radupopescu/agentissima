@@ -8,6 +8,7 @@ cannot be escaped.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -146,6 +147,67 @@ def test_pytest_is_not_allowed_in_the_workspace_fixture(sandbox):
 def test_pipes_between_allowed_commands_work(sandbox):
     result = call(sandbox, "run_command", command="cat data/a.txt | wc -l")
     assert result.result.startswith("exit=0")
+
+
+def test_backgrounding_cannot_smuggle_a_disallowed_command(sandbox):
+    """A bare `&` used to fall through unchecked: only the first segment's
+    head token was validated, so `wc -l a.txt & sleep 5` ran `sleep` — not on
+    any allowlist — anyway."""
+    result = call(sandbox, "run_command", command="wc -l data/a.txt & sleep 5")
+    assert result.result.startswith("exit=127")
+
+
+# --- run_command cannot reach outside the sandbox ---------------------------
+#
+# A live run against LM Studio found this for real: `grep -r expense /` and
+# `find / ...` (allowed heads, absolute-path arguments) reached the real
+# filesystem, because run_command has no structured path parameter for the
+# leading-`/` root-anchoring the other tools apply — see findings.md,
+# 2026-08-29.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep -r expense /",
+        "find / -name '*.csv'",
+        "cat /etc/hosts",
+        "ls ~/",
+        "cat ../../etc/passwd",
+        "cat data/../../etc/passwd",
+    ],
+)
+def test_absolute_and_traversal_arguments_are_refused(sandbox, command):
+    result = call(sandbox, "run_command", command=command)
+    assert result.result.startswith("exit=127")
+    assert "outside working directory" in result.result
+
+
+def test_a_relative_path_argument_still_works(sandbox):
+    result = call(sandbox, "run_command", command="cat data/a.txt")
+    assert result.result.startswith("exit=0")
+
+
+def test_timeout_kills_the_whole_process_group(sandbox, tmp_path):
+    """Regression: `subprocess.run(shell=True, timeout=)` kills only the
+    top-level shell on timeout, not anything it forked — a child process kept
+    running as an orphan indefinitely. This is exactly what happened for real
+    with `grep -r ... /` (findings.md, 2026-08-29): the 30s timeout fired and
+    reported cleanly, but the underlying grep kept scanning the real disk for
+    over an hour, unobserved."""
+    marker = tmp_path / "child-finished.txt"
+    (tmp_path / "spawn_child.py").write_text(
+        "import subprocess, time\n"
+        "subprocess.Popen(['python', '-c', "
+        "'import time; time.sleep(0.5); open(\"child-finished.txt\", \"w\").write(\"done\")'])\n"
+        "time.sleep(10)\n",
+        encoding="utf-8",
+    )
+    result = sandbox.run_command("python spawn_child.py", timeout_s=0.2)
+    assert result.startswith("exit=124")
+
+    time.sleep(1.0)  # well past the 0.5s the child needs to finish, if still alive
+    assert not marker.exists(), "the forked child kept running after the timeout"
 
 
 # --- leading slash is root-anchored inside the sandbox (§4.6) ----------------

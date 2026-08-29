@@ -11,6 +11,7 @@ import hashlib
 import os
 import re
 import shlex
+import signal
 import subprocess
 from pathlib import Path
 
@@ -19,7 +20,9 @@ TRUNCATE_LIMIT = 4000
 # Command segments are split on these so that every segment's leading token can
 # be checked against the allowlist. This permits pipes and globs while
 # preventing `cat x | sh` from smuggling a disallowed command past the check.
-SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;]")
+# `&` (background) is included alongside `&&`: without it, `wc -l a.txt &
+# sleep 5` checks only "wc" and runs "sleep" — not in any allowlist — anyway.
+SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;&]")
 
 # Command substitution can smuggle anything at all; refuse it outright.
 SUBSTITUTION = re.compile(r"\$\(|`")
@@ -32,6 +35,18 @@ ALLOWLISTS = {
 # Generated artefacts are excluded from every tree comparison; running the test
 # suite must not, by itself, count as modifying the repository.
 IGNORED = ("__pycache__", ".pytest_cache", ".ruff_cache")
+
+
+def _escapes_sandbox(token: str) -> bool:
+    """True if this argument, used as a path, would reach outside the sandbox.
+
+    run_command has no structured path parameter to normalise — the leading-`/`
+    root-anchoring the other tools apply doesn't happen here, because `command`
+    is handed to a real shell against a real `cwd`. An absolute path or a `..`
+    segment in an argument reaches the real filesystem directly."""
+    if token.startswith("/") or token.startswith("~"):
+        return True
+    return any(part == ".." for part in token.split("/"))
 
 
 def truncate(text: str, limit: int = TRUNCATE_LIMIT) -> str:
@@ -164,7 +179,7 @@ class Sandbox:
                     matches.append(f"{relative}:{number}:{line.strip()}")
         return "\n".join(matches) if matches else "(no matches)"
 
-    def run_command(self, command: str) -> str:
+    def run_command(self, command: str, timeout_s: float = 30.0) -> str:
         if not isinstance(command, str):
             return f"error: command must be a string, got {type(command).__name__}"
         if SUBSTITUTION.search(command):
@@ -183,6 +198,9 @@ class Sandbox:
             head = Path(tokens[0]).name
             if head not in self.allowlist:
                 return f"exit=127 command not permitted: {tokens[0]}"
+            for token in tokens:
+                if _escapes_sandbox(token):
+                    return f"exit=127 path outside working directory: {token}"
 
         env = dict(os.environ)
         venv_bin = Path(__file__).resolve().parent.parent / ".venv" / "bin"
@@ -190,18 +208,34 @@ class Sandbox:
         env.pop("PYTHONPATH", None)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
 
+        # `start_new_session=True` puts the shell and everything it spawns in
+        # their own process group. A plain `subprocess.run(..., timeout=)` only
+        # kills the shell on timeout, not its children — a `grep -r` the shell
+        # forked keeps running, orphaned, after the shell is gone. Killing the
+        # whole group on timeout is what actually stops the work.
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 shell=True,
                 cwd=self.root,
                 env=env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=30,
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired:
-            return "exit=124 command timed out after 30s"
+        except OSError as exc:
+            return f"exit=127 could not start command: {exc}"
 
-        output = (completed.stdout or "") + (completed.stderr or "")
-        return f"exit={completed.returncode}\n{output}"
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            return f"exit=124 command timed out after {timeout_s:g}s"
+
+        output = (stdout or "") + (stderr or "")
+        return f"exit={process.returncode}\n{output}"
