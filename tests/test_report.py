@@ -113,6 +113,24 @@ def test_degenerate_rate_with_no_records_is_zero():
     assert report.degenerate_rate([]) == 0.0
 
 
+# --- §4.8 server_error: tracked separately from degenerate_rate ------------
+
+
+def test_server_error_rate_is_not_counted_as_degenerate():
+    """A backend crash is an infrastructure fault, not a decoding
+    degeneracy — recommended-default sampling could plausibly fix a
+    repetition loop, but not a server crash, so the two rates must not be
+    conflated."""
+    records = [{"suite": "W", "termination_reason": "server_error"}] * 5
+    assert report.degenerate_rate(records) == 0.0
+    assert report.server_error_rate(records) == 1.0
+
+
+def test_server_error_rate_excludes_stage1():
+    records = [{"suite": "1", "termination_reason": "server_error"}] * 5
+    assert report.server_error_rate(records) == 0.0
+
+
 # --- §10.3: final table verdict ---------------------------------------------
 
 

@@ -101,6 +101,21 @@ def is_degenerate_triggered(records: list[dict]) -> bool:
     return degenerate_rate(records) > DEGENERATE_THRESHOLD
 
 
+def server_error_rate(records: list[dict]) -> float:
+    """Fraction of agent-stage runs ending in `server_error` (§4.8) — the
+    backend failing mid-stream. Tracked separately from `degenerate_rate`:
+    a live run hit this on LFM-GQ4's llama.cpp backend on a long tool-call
+    argument, and it is an infrastructure fault, not a decoding degeneracy —
+    recommended-default sampling (§4.2's trigger) could plausibly fix a
+    repetition loop; it could not fix a server crash, so the two must not be
+    conflated into one rate."""
+    agent_records = [r for r in records if r["suite"] != "1"]
+    if not agent_records:
+        return 0.0
+    errors = sum(1 for r in agent_records if r["termination_reason"] == "server_error")
+    return errors / len(agent_records)
+
+
 # --- §10.2: headline metric -----------------------------------------------
 
 
@@ -275,18 +290,23 @@ def main(argv: list[str] | None = None) -> int:
     table = render_markdown(rows)
     print(table)
 
+    all_records = load_all_records(args.results_dir)
     for config_id in config_ids:
         agent_records = [
-            r for r in load_all_records(args.results_dir)
-            if r["config_id"] == config_id and r["suite"] != "1"
+            r for r in all_records if r["config_id"] == config_id and r["suite"] != "1"
         ]
-        if agent_records and is_degenerate_triggered(agent_records):
+        if not agent_records:
+            continue
+        if is_degenerate_triggered(agent_records):
             rate = degenerate_rate(agent_records)
             print(
                 f"{config_id}: degenerate rate {rate:.0%} exceeds the §4.2 threshold "
                 f"({DEGENERATE_THRESHOLD:.0%}) — Stage 5B's recommended-default "
                 "sampling pass is warranted"
             )
+        error_rate = server_error_rate(agent_records)
+        if error_rate > 0:
+            print(f"{config_id}: {error_rate:.0%} of agent runs ended in server_error")
 
     if args.out:
         args.out.write_text(table, encoding="utf-8")

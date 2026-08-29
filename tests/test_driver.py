@@ -178,7 +178,10 @@ class FakeClient:
     def stream_turn(self, messages, tools=None, clock=None):
         self.seen_messages.append(list(messages))
         if self.turns:
-            return self.turns.pop(0)
+            item = self.turns.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
         return answer_turn("ran out of scripted turns")
 
 
@@ -272,6 +275,24 @@ def test_wall_clock_timeout(sandbox):
     turns = [call_turn("list_files", '{"path": "."}', f"c{i}") for i in range(5)]
     outcome = run(turns, sandbox, clock=StepClock(step=400.0), wall_clock_limit_s=600.0)
     assert outcome.termination_reason == "timeout"
+
+
+def test_a_server_error_mid_stream_terminates_the_run_not_the_process(sandbox):
+    """A live run against LM Studio hit exactly this: a 500 mid-stream on a
+    long tool-call argument. Previously this crashed the whole process,
+    losing every other run in the stage; it must instead end just this run."""
+    import httpx2
+    from openai import APIError
+
+    error = APIError(
+        "Invalid diff: ... not found at start of ...",
+        httpx2.Request("POST", "http://localhost:1234/v1/chat/completions"),
+        body=None,
+    )
+    outcome = run([error], sandbox)
+    assert outcome.termination_reason == "server_error"
+    assert outcome.steps == 1
+    assert outcome.answer == ""
 
 
 # --- message construction ---------------------------------------------------

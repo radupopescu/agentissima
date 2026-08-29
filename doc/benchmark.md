@@ -425,6 +425,7 @@ The run ends on whichever occurs first:
 | 600 s wall clock | `timeout` |
 | 3 consecutive identical tool calls (same name and arguments) | `loop_detected` |
 | 5 consecutive invalid tool calls | `malformed_calls` |
+| The backend fails mid-stream (an `openai.APIError`, not a malformed response) | `server_error` |
 
 `empty_answer` is separated from `final_answer` because a reasoning model can spend an entire
 turn in `reasoning_content` and emit nothing else. Grading that as an empty answer the model
@@ -436,6 +437,19 @@ Repeating one malformed call therefore reports `loop_detected` at the third call
 validity. `malformed_calls` consequently means *varying* invalid calls — the model cannot
 format arguments — which is a different finding from being stuck, and the two are worth
 distinguishing in failure analysis.
+
+`server_error` is not §4.5's no-repair rule being bent: that rule is about not papering over
+*the model's* mistakes — a malformed tool call is still recorded as invalid and left alone. A
+mid-stream `APIError` is the *server* failing to complete a response at all, an infrastructure
+fault rather than model output, so ending just that run and recording it — rather than either
+retrying it or letting the exception crash the whole stage and lose every other run already
+in progress — is a robustness property of the harness, not a measurement decision about the
+model. A live Stage 2A run hit this for real: LFM-GQ4's llama.cpp backend returned a 500
+("Invalid diff: ... not found at start of ...") partway through streaming a long tool-call
+argument, and the uncaught `openai.APIError` took the whole process down before this fix.
+`server_error` is deliberately excluded from §4.2's degenerate-decoding rate — a backend crash
+is not something recommended-default sampling could plausibly fix, unlike a repetition loop —
+and tracked on its own instead (`harness/report.py`'s `server_error_rate`).
 
 ---
 

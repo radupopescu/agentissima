@@ -13,6 +13,8 @@ import json
 import time
 from dataclasses import dataclass
 
+from openai import APIError
+
 from .client import LMStudioClient, StreamedTurn
 from .metrics import RunTiming, turn_metrics
 from .prompt import assemble
@@ -84,7 +86,18 @@ class NativeDriver:
             if self.history_mode == "compact" and last_turn_start is not None:
                 sent = messages[:2] + messages[last_turn_start:]
 
-            turn = self.client.stream_turn(sent, TOOL_SCHEMAS, clock=clock)
+            try:
+                turn = self.client.stream_turn(sent, TOOL_SCHEMAS, clock=clock)
+            except APIError:
+                # The server failed mid-stream (a backend crash, not a
+                # malformed response from the model) — §4.5's no-repair rule
+                # is about the model's mistakes, not infrastructure faults, so
+                # this is recorded as a distinct outcome rather than silently
+                # retried or left to crash the whole stage and lose every
+                # other run in it (§4.8).
+                steps += 1
+                termination = "server_error"
+                break
             steps += 1
             timing.add(turn_metrics(turn, self.overhead_s))
             final_finish_reason = turn.finish_reason

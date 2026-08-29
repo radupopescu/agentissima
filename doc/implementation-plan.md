@@ -47,7 +47,7 @@ The harness half runs with no model and no network (162 tests):
 > produced its timings cannot now be established, so they have been dropped. This is the §2.1
 > identifier defect appearing in the project's own records, and the reason paths replaced keys.
 
-Four defects that only a real model exposed, now fixed and covered by tests:
+Five defects that only a real model exposed, now fixed and covered by tests:
 
 | Defect | Fix |
 |---|---|
@@ -55,6 +55,7 @@ Four defects that only a real model exposed, now fixed and covered by tests:
 | Process discovery matched the Electron renderer (0.5 GiB) instead of the backend (6.5 GiB) | Hints target `.lmstudio/.internal`; candidates ranked by footprint, not RSS; refuses a process too small to hold a model (§5.2) |
 | `max_tokens=1` made LM Studio finish without emitting a token delta, so overhead calibration silently returned 0.0 and prompt tok/s went unadjusted | `max_tokens=8`; no timed sample now fails loudly (§5.1) |
 | W01 failed a *correct* answer that named £85 and identified £72 as superseded | The decoy may appear if marked superseded (§7.1) |
+| **An uncaught `openai.APIError` crashed the whole process.** A live Stage 2A run against LFM-GQ4 hit a real backend 500 mid-stream (`"Invalid diff: ... not found at start of ..."`, llama.cpp choking on a long tool-call argument) on W02's third repetition; the exception propagated all the way up and killed the run, losing every task still queued behind it — resumability meant only the already-written records survived | `NativeDriver` catches `APIError` around the one `stream_turn` call and ends just that run with a new `server_error` termination reason (§4.8), never retried or repaired — this is an infrastructure fault, not the model's mistake, so §4.5's no-repair rule doesn't apply to it |
 
 ### Not built
 
