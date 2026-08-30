@@ -16,6 +16,32 @@ drawn from.
 
 ---
 
+## 2026-08-30 — A second, unexplained `server_error` pattern
+
+**What happened.** In the full six-configuration Stage 2A rebuild (`v3`, after the sandbox fix
+below), four of six configurations hit `server_error` on exactly one task each, all 3
+repetitions, 0 elsewhere: LFM-M8 and LFM-BF16 on W03, LFM-G8 on W02, BON-M2 on W07. LFM-GQ4 and
+BON-G2 had none.
+
+**Not the Engine Protocol bug.** That bug always left a matching `ERROR` line in LM Studio's
+server log (`Engine protocol predict stream returned an error`, with the "Invalid diff" message).
+None of these four crashes have any matching log entry — `grep -n "ERROR" ~/.lmstudio/
+server-logs/2026-08/2026-08-30.1.log` finds nothing for any of them. That rules out a server-side
+500 of the same shape. The transcripts leading up to each crash are unremarkable — no absolute
+paths, no unusually long arguments, nothing the sandbox fix (below) would have refused.
+
+**Root cause unknown.** Deterministic per (config, task) at `temperature=0`, but no server-side
+trace to explain it — client-side connection issue, or a different failure inside the same
+`openai.APIError` family, are both plausible and neither is confirmed. Not investigated further
+this session: the harness already handles it correctly (`server_error`, §4.8) — it recorded each
+occurrence and moved on rather than losing the run or the stage. The cost is three lost
+repetitions per affected task, not a crash.
+
+- Evidence: `results/{LFM-M8,LFM-G8,LFM-BF16}-8192/raw/stage2a.jsonl` and
+  `results/BON-M2-8192/raw/stage2a.jsonl`, plus the matching transcripts.
+
+---
+
 ## 2026-08-29 — LM Studio's Engine Protocol runtime corrupts streamed tool-call arguments
 
 **What happened.** A live Stage 2A run against LFM-GQ4 crashed on W02's third repetition.
@@ -55,19 +81,18 @@ anything that should not be belongs elsewhere.
 
 ---
 
-## 2026-08-29 — LFM-GQ4 never tries the one permitted `run_command` command
+## 2026-08-29/30 — LFM2.5 never tries the one permitted `run_command` command
 
-**Superseded.** The run this entry describes was collected under `task_set_version: v2`, before
-a `run_command` sandboxing bug was fixed (`implementation-plan.md`'s defect table) — absolute
-paths reached the real filesystem, and the model used this on task W06 (`grep -r expense /`,
-`find / ...`), which is not reflected in the W02/W03/W09/W10 pattern below. That pattern itself
-came from calls the allowlist correctly blocked before reaching a shell (`cd`, `python3`, `awk`),
-so it is probably still accurate, but needs confirming against a `v3` re-run before it is
-trusted as a result. Left here for now, superseded once that re-run exists.
+**Confirmed across all four LFM configurations**, under `task_set_version: v3` (the `v2` run
+this was first observed in was affected by the `run_command` sandbox bug — see
+`implementation-plan.md`'s defect table — and has been superseded; the pattern below held up in
+the clean re-run). Checked directly: LFM-GQ4, LFM-M8, LFM-G8 and LFM-BF16 each tried `cd`,
+`python3`, `awk`, `pwd`, `ls` or `echo` on their `run_command` calls for W02/W03/W09 — never
+plain `python`, in any of the four. Same base model, four quantisations, same blind spot.
 
-**What happened.** In this run, LFM-GQ4 passed the four tasks solvable by
+**What happened.** In each configuration's Stage 2A run, LFM2.5 passed the tasks solvable by
 retrieval alone (`read_file`/`list_files`/`search_files`: W01, W04, W05, W08) and failed the
-four that need computed aggregation over CSV data (W02, W03, W09, W10).
+tasks that need computed aggregation over CSV data (W02, W03, W09, W10).
 
 **Mechanism.** The transcripts show the model trying `run_command` with `cd /workspace &&
 python3 -c "..."`, refused: `exit=127 command not permitted: cd`. It retries with `python3 -c
@@ -85,12 +110,12 @@ rule exists so the harness does not do that recovery for the model. LFM-GQ4 defa
 `python3`/`cd`, common conventions elsewhere, and does not converge on `python` after two
 refusals, nor does it compute the answer itself once tool use stalls.
 
-LFM-M8, LFM-BF16 and LFM-G8 are the same base model at different quantisations. Worth checking
-whether they show the same pattern once their Stage 2A data exists, rather than treating each
-configuration's `run_command` failures as independent.
+Since this holds across all four quantisations, it reads as a property of LFM2.5-2.6B's
+training, not of any one artefact — worth stating as a finding about the model, not about a
+configuration.
 
-- Evidence: `results/LFM-GQ4-8192/raw/stage2a.jsonl` (task_id W02/W03/W09/W10, all three
-  repetitions) and the transcripts under `results/LFM-GQ4-8192/transcripts/`.
+- Evidence: `results/{LFM-GQ4,LFM-M8,LFM-G8,LFM-BF16}-8192/raw/stage2a.jsonl` (task_id
+  W02/W03/W09/W10) and the matching transcripts.
 
 ---
 
