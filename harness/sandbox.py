@@ -22,7 +22,11 @@ TRUNCATE_LIMIT = 4000
 # preventing `cat x | sh` from smuggling a disallowed command past the check.
 # `&` (background) is included alongside `&&`: without it, `wc -l a.txt &
 # sleep 5` checks only "wc" and runs "sleep" — not in any allowlist — anyway.
-SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;&]")
+# The `(?<![>&])` exclusion keeps `2>&1`/`1>&2`-style redirection whole: a `&`
+# immediately after `>` is part of a redirect target, not a background
+# operator. Missing this split a real command in two, refusing it with a
+# nonsensical "command not permitted: 1" — found in LFM-G8's Stage 2A data.
+SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;]|(?<![>&])&")
 
 # Command substitution can smuggle anything at all; refuse it outright.
 SUBSTITUTION = re.compile(r"\$\(|`")

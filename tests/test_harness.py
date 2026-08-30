@@ -157,6 +157,16 @@ def test_backgrounding_cannot_smuggle_a_disallowed_command(sandbox):
     assert result.result.startswith("exit=127")
 
 
+@pytest.mark.parametrize("command", ["wc -l data/a.txt 2>&1", "wc -l data/a.txt 1>&2"])
+def test_stderr_redirection_is_not_mistaken_for_backgrounding(sandbox, command):
+    """Regression: splitting on a bare `&` for backgrounding also split
+    `2>&1`/`1>&2` in two, refusing an ordinary command with a nonsensical
+    "command not permitted: 1" — found for real in LFM-G8's Stage 2A data,
+    on every task where the model reached for this exact idiom."""
+    result = call(sandbox, "run_command", command=command)
+    assert result.result.startswith("exit=0")
+
+
 # --- run_command cannot reach outside the sandbox ---------------------------
 #
 # A live run against LM Studio found this for real: `grep -r expense /` and
