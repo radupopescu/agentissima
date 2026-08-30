@@ -229,8 +229,18 @@ def _verdict(config_id: str, all_records: list[dict]) -> str:
     if not stages.stage2a_gate(stage2a_records).proceeds:
         return "excluded: failed Stage 2A gate"
 
+    stage2b_records = [
+        r for r in all_records if r["config_id"] == config_id and r["suite"] == "T"
+        and r["context_length"] == 8192
+    ]
+    if not stage2b_records:
+        return "passed Stage 2A gate"
+
+    # suite in ("W", "T") only — Stage 1's 16K raw-inference records also carry
+    # context_length == 16384 under suite "1" and are not Stage 3 evidence.
     stage3_records = [
-        r for r in all_records if r["config_id"] == config_id and r["context_length"] == 16384
+        r for r in all_records if r["config_id"] == config_id
+        and r["suite"] in ("W", "T") and r["context_length"] == 16384
     ]
     if stage3_records:
         return "proceeded to Stage 3"

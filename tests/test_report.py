@@ -175,14 +175,34 @@ def test_verdict_excluded_failed_2a_gate():
     assert report._verdict("C", records) == "excluded: failed Stage 2A gate"
 
 
+def test_verdict_passed_stage2a_gate_with_no_stage2b_data():
+    records = _stage0_records("C", valid_count=9)
+    records += _stage2a_records("C", passed=True, progress=4)
+    assert report._verdict("C", records) == "passed Stage 2A gate"
+
+
 def test_verdict_proceeded_to_stage2b():
     records = _stage0_records("C", valid_count=9)
     records += _stage2a_records("C", passed=True, progress=4)
+    records.append({"config_id": "C", "context_length": 8192, "suite": "T"})
     assert report._verdict("C", records) == "proceeded to Stage 2B"
 
 
 def test_verdict_proceeded_to_stage3():
     records = _stage0_records("C", valid_count=9)
     records += _stage2a_records("C", passed=True, progress=4)
+    records.append({"config_id": "C", "context_length": 8192, "suite": "T"})
     records.append({"config_id": "C", "context_length": 16384, "suite": "W"})
     assert report._verdict("C", records) == "proceeded to Stage 3"
+
+
+def test_verdict_stage1_16k_records_are_not_mistaken_for_stage3():
+    """Regression: Stage 1's 16K raw-inference records also carry
+    context_length == 16384, but under suite "1" — they are not Stage 3
+    evidence. A live report once showed "proceeded to Stage 3" for every
+    config that merely had Stage 1 16K data, with no Stage 2B/3 ever run."""
+    records = _stage0_records("C", valid_count=9)
+    records += _stage2a_records("C", passed=True, progress=4)
+    records.append({"config_id": "C", "context_length": 8192, "suite": "T"})
+    records.append({"config_id": "C", "context_length": 16384, "suite": "1"})
+    assert report._verdict("C", records) == "proceeded to Stage 2B"
