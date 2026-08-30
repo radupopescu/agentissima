@@ -16,6 +16,42 @@ drawn from.
 
 ---
 
+## 2026-08-30 — Ternary-Bonsai-8B fails Stage 2A on a specific pattern, not on tool calling
+
+**What happened.** Both Bonsai configurations (BON-M2, BON-G2) scored 0/10 on Suite W in Stage
+2A. Neither made an invalid tool call across all 60 runs, and both passed Stage 0 (9/9).
+
+**Mechanism**, from the transcripts:
+
+- Search patterns are too literal. W01: `search_files(pattern="per-diem cap international
+  travel")` — the whole question used as the search string, not a short distinctive phrase.
+  Same shape on W08. Neither matches real file content.
+- Most runs stop after one failed attempt. 21 of 30 runs, in both configs, make exactly one
+  tool call, get a miss or an error, and stop. W04 shows this clearly: the prompt names the
+  wrong file on purpose (`data/expense.csv`; the real file is `data/expenseS.csv`). Bonsai
+  tries the literal path, gets "no such file," and never tries `list_files` to find the real
+  one — the oracle's own next step at that point.
+- `run_command` is never used when it's needed. W07 requires a row count past the
+  4000-character truncation (§4.7); the oracle solves it with `wc -l`. Bonsai read the
+  truncated file twice, tried to invent a `count_lines` tool (correctly refused as unknown),
+  then wrote `1889` to the output file — not derived from anything visible in the transcript.
+
+**Analysis.** Tool calling itself is not the problem: zero invalid calls, and W07's transcript
+shows a real multi-step sequence, including recovery from a hallucinated tool. The gap is
+specific — query formulation, retrying after a failed first attempt, and recognising when
+`run_command` is required instead of `read_file`. This is what §1.2's progress score exists to
+show: a weak model, not a broken harness.
+
+Specific to this harness: no query hints, no retry assistance, no other agent framework's
+prompting. §1.1 already states results do not transfer to a different harness or prompting
+style.
+
+- Evidence: `results/{BON-M2,BON-G2}-8192/raw/stage2a.jsonl` and the matching transcripts,
+  particularly W01/W04/W08 (single failed attempt) and BON-G2's W07 (8 tool calls, hallucinated
+  tool, fabricated answer).
+
+---
+
 ## 2026-08-30 — A second, unexplained `server_error` pattern
 
 **What happened.** In the full six-configuration Stage 2A rebuild (`v3`, after the sandbox fix
