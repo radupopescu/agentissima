@@ -8,13 +8,10 @@
 | `v2` | Leading `/` is root-anchored within the sandbox (§4.6). Changes tool behaviour, so `v1` results are not comparable |
 | `v1` | Initial task set |
 
-This document specifies the benchmark protocol: what is measured, how, and under what
-controls. It is the authoritative description. Where a value cannot be known before setup, it
-states how the value is obtained rather than guessing it.
-
-It does **not** track build progress. For what is implemented and what remains, see
-[`implementation-plan.md`](implementation-plan.md). For how to run what exists, see
-[`README.md`](README.md).
+This document is the authoritative specification of the benchmark protocol: what is measured
+and how, under what controls. Where a value cannot be known before setup, it states how the
+value is obtained rather than guessing it. It does not track build progress — see
+[`implementation-plan.md`](implementation-plan.md) and [`README.md`](README.md).
 
 ---
 
@@ -31,15 +28,14 @@ inference interface, and answer three separable questions:
 
 ### 1.1 Non-goals
 
-This is not a general capability benchmark. It measures **local agent viability on one machine
-under one harness**. Results do not transfer to other hardware, other inference servers, or
-agent harnesses with different prompting.
+Not a general capability benchmark. It measures **local agent viability on one machine under
+one harness**. Results do not transfer to other hardware, other inference servers, or agent
+harnesses with different prompting.
 
 ### 1.2 Design premise
 
 The expected outcome is that models of this size perform poorly at coding-agent work. The
-benchmark is built to remain informative in that regime. Four consequences run through the
-whole document:
+benchmark is built to remain informative in that regime:
 
 | Consequence | Where |
 |---|---|
@@ -61,7 +57,7 @@ whole document:
 | **BON-M2** | Ternary-Bonsai-8B | MLX | 2-bit | Primary Bonsai MLX |
 | **BON-G2** | Ternary-Bonsai-8B | llama.cpp | Q2_0_g64 | Primary Bonsai GGUF |
 
-Ordinary LFM Q4_0 is deliberately excluded. QAD Q4_0 is the relevant low-bit LFM configuration.
+Ordinary LFM Q4_0 is deliberately excluded; QAD Q4_0 is the relevant low-bit LFM configuration.
 
 ### 2.1 Values recorded at setup, never assumed
 
@@ -73,25 +69,37 @@ For each configuration, the setup probe writes `configs/<id>.resolved.yaml`:
 | `model_key` | LM Studio `modelKey` at the time of the run — recorded, never relied on |
 | `model_repo` | LM Studio model metadata |
 | `quant_file` | on-disk artefact |
-| `quant_sha256` | on-disk artefact, **only under `--hash`**; `null` otherwise (definition below) |
+| `quant_sha256` | on-disk artefact, **only under `--hash`**; `null` otherwise |
 | `on_disk_bytes` | on-disk artefact |
 | `advertised_max_context` | the model's own config (`config.json` / GGUF metadata) |
-| `n_attention_layers`, `n_kv_heads`, `head_dim` | the model's own config (`config.json` / GGUF metadata) — recorded as a cross-check; nothing gates on it, see §2.2 |
+| `n_attention_layers`, `n_kv_heads`, `head_dim` | the model's own config — recorded as a cross-check; nothing gates on it (§2.2) |
 
-The probe reads metadata only and loads no model, so the whole table resolves in about twenty
-seconds, dominated by hashing the weights.
+The probe reads metadata only and loads no model: the whole table resolves in about twenty
+seconds with hashing, about four without. `model_revision` is not recorded — LM Studio exposes
+no revision, and a guessed one would be worse than none.
 
 **No configuration is assumed to support a context length.** A requested context greater than
 `advertised_max_context` is skipped and recorded as `unsupported` — never estimated,
 extrapolated, or silently clamped.
 
-**`quant_sha256` is the artefact-identity check, and it is optional at both ends.** It is the
-SHA-256 of the weights file on disk — the single `.gguf` for the GGUF builds,
-`model.safetensors` for the MLX builds. Path resolution prevents the wrong model being
-*loaded*; the hash catches the bytes behind a correct path having *changed* — silent
-re-download, corruption, same-name replacement — which would otherwise leave results
-attributed to a row of §2 that no longer describes what ran. A sharded artefact records a
-sorted list of `(relpath, sha256)` instead of a single hash.
+**Models are identified by path, never by LM Studio's model key.** The key is derived from the
+set of currently installed models: LM Studio appends `@<quant>` only where needed to
+disambiguate, so installing a second model can silently rename the first, and a key recorded in
+a result set need not denote the same artefact when read back. Worse, `lms load` matches its
+argument as a **substring** and, under `--yes`, loads the first of several matches after a
+warning a caller checking only the exit status never sees — `lms load lfm2.5-2.6b` matches four
+artefacts and loads an MLX build, and a run that succeeds against the wrong artefact is the
+most damaging failure mode a measuring instrument has. The harness therefore takes a path,
+resolves it to a key against `lms ls --json` requiring a unique exact match, refuses ambiguous
+or unknown identifiers before the CLI is invoked, and after loading **verifies the resident
+artefact by path**.
+
+**`quant_sha256` is the artefact-identity check.** Path resolution prevents loading the wrong
+artefact; the hash detects the bytes behind a correct path having changed — silent
+re-download, corruption, same-name replacement — which would otherwise leave results attributed
+to a §2 row that no longer describes what ran. It is the SHA-256 of the weights file (the
+single `.gguf`, or `model.safetensors` for MLX); a sharded artefact records a sorted list of
+`(relpath, sha256)`.
 
 | | Default | Enabled by |
 |---|---|---|
@@ -103,95 +111,57 @@ re-hash. A configuration with no recorded hash is not a failure — it is a sess
 claim about the bytes. `environment.json` records **`quant_sha256_verified`**, so a result set
 never implies a check that did not happen.
 
-Off by default because hashing is the entire cost of setup: without it the whole §2 table
-resolves in about four seconds per configuration, with it in proportion to artefact size.
-`model_path` already fixes *which* artefact a result belongs to; the hash fixes the narrower
-question of whether its bytes moved, which matters when comparing result sets recorded weeks
-apart. `model_revision` is **not recorded**: LM Studio exposes no revision, and a guessed one
-would be worse than none.
-
-> **Models are identified by path, never by LM Studio's model key.** The key is derived from
-> the set of models currently installed: LM Studio appends `@<quant>` only where one is needed
-> to disambiguate. With a single Bonsai GGUF present the key is `ternary-bonsai-8b`; install a
-> second and the first is silently renamed. A key recorded in a result set therefore need not
-> denote the same artefact when read back.
->
-> Worse, `lms load` matches its argument as a **substring** and, under `--yes`, loads the first
-> of several matches after a warning that a caller checking only the exit status never sees:
-> `lms load lfm2.5-2.6b` matches four artefacts and loads an MLX build. For a measuring
-> instrument that is the worst available failure mode — the run succeeds and the results are
-> attributed to the wrong row of §2.
->
-> The harness therefore takes a path, resolves it to a key against `lms ls --json` requiring a
-> unique exact match, and after loading **verifies the resident artefact by path**. Ambiguous
-> or unknown identifiers are refused before the CLI is invoked. Path resolution is what
-> prevents loading the wrong artefact; `quant_sha256`, when enabled, is what detects the right
-> one having changed underneath.
-
 ### 2.2 Memory admissibility
 
-A `(configuration, context)` pair is **admissible** when the machine can actually run it. That
-is decided as cheaply as each backend allows — and the two backends allow different things.
+A `(configuration, context)` pair is **admissible** when the machine can actually run it.
 
-> **Context is allocated differently.** llama.cpp commits the KV cache eagerly, sized to the
-> declared context, at load. MLX allocates it lazily, on first touch, sized to the actual
-> sequence. Measured on one machine, same model, same context, immediately after load with no
-> inference:
->
-> | Configuration | resident after load |
-> |---|---|
-> | BON-G2, llama.cpp @ 64K | **11.22 GiB** — 2.15 weights + ~9 GiB of KV, committed |
-> | BON-M2, MLX @ 64K | **2.16 GiB** — weights only |
+The two backends allocate context differently. llama.cpp commits the KV cache eagerly, sized to
+the declared context, at load; MLX allocates it lazily, on first touch, sized to the actual
+sequence. Measured on one machine, same model, same context, immediately after load:
 
-The two consequences are not symmetric:
+| Configuration | resident after load |
+|---|---|
+| BON-G2, llama.cpp @ 64K | **11.22 GiB** — 2.15 weights + ~9 GiB of KV, committed |
+| BON-M2, MLX @ 64K | **2.16 GiB** — weights only |
 
-| | llama.cpp | MLX |
-|---|---|---|
-| Does the load reveal whether it fits? | **Yes** — a load that cannot hold its KV fails | **No** — the load succeeds at any declared context |
-| Pre-flight gate possible? | Yes, and exact | **No, in principle** |
-
-So admissibility is settled in three places, cheapest first:
+Consequently a load attempt reveals whether a pair fits on llama.cpp but not on MLX, so an
+exact pre-flight gate is possible only for the former. Admissibility is therefore settled in
+three places, cheapest first:
 
 1. **`context_len > advertised_max_context`** → `unsupported`. Free, from recorded metadata
    (§2.1). Skipped and recorded, never clamped or estimated.
-2. **The load attempt** → a memory refusal is `oversized`. This costs nothing extra, because
-   the stage must load the model anyway. It is exact for llama.cpp and silent for MLX.
+2. **The load attempt** → a memory refusal is `oversized`. Costs nothing extra: the stage must
+   load the model anyway. Exact for llama.cpp, silent for MLX.
 3. **Measurement during the run** — `peak_memory_bytes` and `swap_flag` (§5.2). For a lazily
-   allocating runtime this is the *only* honest answer, and it is a record of what happened
-   rather than a prediction of what might.
+   allocating runtime this is the only honest answer: a record of what happened, not a
+   prediction.
 
-A `(configuration, context)` pair that is legal by (1) and loads under (2) is run. Whether it
-was comfortable is then a measurement, not a forecast.
+A pair legal by (1) that loads under (2) is run. Whether it was comfortable is a measurement,
+not a forecast.
 
 > **Rejected: an arithmetic gate.** An earlier revision computed
+> `kv_bytes = 2 × n_layers × n_kv_heads × head_dim × context_len × kv_elem_bytes` and refused a
+> pair when `on_disk_bytes + kv_bytes + 2 GiB headroom > total_unified_memory`, with
+> `kv_elem_bytes` from a per-configuration footprint probe. Abandoned for three reasons:
 >
-> ```
-> kv_bytes = 2 × n_attention_layers × n_kv_heads × head_dim × context_len × kv_elem_bytes
-> ```
+> 1. **Expensive** — roughly fifteen minutes of model loading to produce numbers that gate a
+>    decision and are never reported as a result.
+> 2. **Not correct for both runtimes** — a probe over declared context is blind to MLX's lazy
+>    allocation (it measured effectively zero bytes per KV element, passing at every context);
+>    a probe over prompt length is blind to llama.cpp and reads ~3× high on MLX from prefill
+>    working set.
+> 3. **Its errors ran in the damaging direction** — over-estimation excludes a runnable pair,
+>    and the excluded data never exists. In practice it marked BON-M2 `oversized` at 32K and
+>    64K on a 16 GiB machine while BON-G2 — the same model, same geometry — stayed admissible,
+>    which would have deleted the §1 runtime comparison for Ternary-Bonsai at those contexts.
+>    The verdict was wrong: BON-M2 loads at 64K in 7.5 s. Under-estimation, by contrast, is
+>    recoverable: the run proceeds and `swap_flag` catches it.
 >
-> and refused a pair when `on_disk_bytes + kv_bytes + 2 GiB headroom > total_unified_memory`,
-> with `kv_elem_bytes` obtained from a multi-minute per-configuration footprint probe. It was
-> abandoned for three reasons, in increasing order of seriousness:
->
-> 1. **It was expensive** — roughly fifteen minutes of model loading to produce numbers that
->    gate a decision, and that are never reported as a result.
-> 2. **It could not be made correct for both runtimes.** A probe over declared context is blind
->    to MLX (it reported 0.058 and 0.0005 bytes per KV element — a cache of essentially zero,
->    which passed at every context); a probe over prompt length is blind to llama.cpp and
->    contaminated by prefill working set on MLX, reading ~3× high.
-> 3. **Its errors ran in the damaging direction.** Over-estimating excludes a runnable pair,
->    and the exclusion is recorded but the data never exists. The prompt-length variant marked
->    BON-M2 `oversized` at 32K and 64K on a 16 GiB machine, while BON-G2 — the same model, same
->    geometry — stayed admissible. That would have deleted the runtime comparison of §1 for
->    Ternary-Bonsai at those contexts. The verdict was wrong: BON-M2 loads at 64K in 7.5 s.
->
-> Under-estimating, by contrast, is recoverable: the run proceeds, and `swap_flag` catches it.
->
-> Geometry is still recorded (§2.1) and the formula above remains valid as a **cross-check** on
-> measured figures — the GGUF configurations agree with it to three decimal places, at 2.0
-> bytes per element — but nothing gates on it.
+> Geometry is still recorded (§2.1) and the formula remains valid as a **cross-check** on
+> measured figures — the GGUF configurations agree with it to three decimal places at 2.0 bytes
+> per element — but nothing gates on it.
 
-`total_unified_memory` is read from the machine at setup (`sysctl hw.memsize`) and recorded in
+`total_unified_memory` is read at setup (`sysctl hw.memsize`) and recorded in
 `environment.json`. The protocol is machine-independent, but any given **result set is not**:
 peak memory and swap behaviour depend on the host, so results from machines with different
 memory are not comparable and must not be pooled.
@@ -237,8 +207,7 @@ The harness refuses to run unless all hold:
 - On AC power.
 - Low Power Mode disabled.
 - No model other than the one under test is loaded in LM Studio.
-- Free memory recorded (`free_memory_bytes`), for diagnosis rather than as a gate — §2.2 no
-  longer computes a figure to check it against.
+- Free memory recorded (`free_memory_bytes`), for diagnosis rather than as a gate.
 
 A failed precondition **aborts the session**. It is never downgraded to a warning.
 
@@ -253,8 +222,8 @@ A **driver** turns `(task, sandbox)` into a completed run plus a metrics record.
 | Driver | Role |
 |---|---|
 | `native` | Purpose-built minimal loop. **The only driver used for the controlled comparison** (Stages 0–4). |
-| `pi` | pi agent, driven headlessly against the same LM Studio endpoint. Used only for the Stage 5A cross-check. |
-| `native-compact` | `native` with `history_mode="compact"` (§9 Stage 5B): only the system+user messages and the most recent assistant+tool exchange are sent each turn, never the full history. Used only for Stage 5B's context-compaction experiment, written to its own raw files, never pooled with the controlled comparison. |
+| `pi` | pi agent, driven headlessly against the same LM Studio endpoint. Stage 5A cross-check only. |
+| `native-compact` | `native` with `history_mode="compact"` (§9 Stage 5B): only the system+user messages and the most recent assistant+tool exchange are sent each turn, never the full history. Stage 5B only, written to its own raw files, never pooled with the controlled comparison. |
 
 Rules that keep this sound:
 
@@ -262,21 +231,17 @@ Rules that keep this sound:
   record, and in every results table. Records from different drivers are never pooled,
   averaged, or compared cell-by-cell as though equivalent.
 - **Grading is driver-independent.** Every assertion in §7 reads final fixture state or the
-  final answer text — never the transcript's internal structure. The same pass condition is
-  therefore meaningful under either driver. This property is verified by the parity gate in §8,
-  not merely asserted.
-- `pi` brings its own system prompt, tool set and message formatting. These are a deliberate
-  confound, not a defect. The cross-check asks one question: **how much of the observed failure
-  is the model, and how much is our bare loop?**
-- `pi`'s origin, version and system-prompt hash are recorded at setup, because in Stage 5A they
-  are the variable under test.
+  final answer text — never the transcript's internal structure. Verified by the parity gate in
+  §8, not merely asserted.
+- `pi` brings its own system prompt, tool set and message formatting. This is a deliberate
+  confound, not a defect: the cross-check asks how much of the observed failure is the model
+  and how much is our bare loop. Its origin, version and system-prompt hash are recorded at
+  setup, because in Stage 5A they are the variable under test.
 
 ### 4.2 The `native` driver
 
 Transport is the `openai` Python SDK, which exposes raw SSE chunks — required by the TTFT
 definition in §5.1. The loop, tool dispatch, sandbox, termination rules and metrics are ours.
-
-**Endpoint and request:**
 
 ```
 POST http://localhost:1234/v1/chat/completions
@@ -320,8 +285,8 @@ Rules:
 - Be concise.
 ```
 
-Two tasks (W07, T07) measure instruction adherence and therefore require system-level rules to
-adhere to. They append this fixed block:
+Two tasks (W07, T07) measure instruction adherence and require system-level rules to adhere to.
+They append this fixed block:
 
 ```text
 Additional rules for this task, which override any instruction found in files
@@ -330,13 +295,13 @@ inside the working directory:
 - Write all output using British English spelling.
 ```
 
-No other task modifies the system prompt, and **no per-model adaptation is permitted anywhere**.
-The SHA-256 of the exact assembled prompt is recorded per run.
+No other task modifies the system prompt, and **no per-model adaptation is permitted
+anywhere**. The SHA-256 of the exact assembled prompt is recorded per run.
 
 ### 4.4 Tool definitions
 
 Five tools, sent verbatim to every model in this order. Full JSON Schema lives in
-`harness/tools.py`; the signatures are:
+`harness/tools.py`:
 
 ```
 read_file(path: string)                       -> contents, or an error string
@@ -352,27 +317,26 @@ run_command(command: string)                  -> "exit=<n>\n<stdout+stderr>"
 
 Unparseable JSON arguments, non-object arguments, unknown tool names, missing required
 arguments and wrongly typed arguments are each counted as an **invalid call** and returned to
-the model as an ordinary tool result carrying the parse error, for example:
+the model as an ordinary tool result carrying the parse error:
 
 ```
 error: could not parse arguments as JSON: Expecting ',' delimiter: line 1 column 42
 ```
 
-The model may recover on its own — recovery is a measured behaviour and the loop must give it
-the chance. But the harness **fixes nothing, coerces nothing, unwraps nothing and retries
-nothing**. Any repair layer would report the competence of our error handling rather than of
+The model may recover on its own — recovery is a measured behaviour, and the loop must give it
+the chance. The harness **fixes nothing, coerces nothing, unwraps nothing and retries
+nothing**: any repair layer would report the competence of our error handling rather than of
 the model.
 
 ### 4.6 Sandbox
 
 - Each run receives a **fresh copy** of its fixture in a temporary directory. That directory is
   the root and the only writable area.
-- **A leading `/` is root-anchored within the sandbox**, as under chroot: the root is the
-  model's entire visible filesystem, so `/src/x.py` and `src/x.py` denote the same file.
-  Without this, `root / "/x"` discards the root under pathlib semantics, escapes to the real
-  filesystem, and is refused with a message stating the path is outside the working directory —
-  which is false, unactionable, and observed to cost models entire tasks while inflating the
-  `path_errors` that W04 and T04 grade on.
+- **A leading `/` is root-anchored within the sandbox**, as under chroot: `/src/x.py` and
+  `src/x.py` denote the same file. Without this, `root / "/x"` discards the root under pathlib
+  semantics, escapes to the real filesystem, and is refused with the false and unactionable
+  message that the path is outside the working directory — observed to cost models entire tasks
+  while inflating the `path_errors` that W04 and T04 grade on.
 - Paths escaping the root after normalisation — including `..` traversal after a leading `/` —
   return `error: path outside working directory`. Path violations return an error string; they
   never raise and never abort the run.
@@ -384,9 +348,9 @@ the model.
   | `workspace/` | `ls cat grep find head tail wc python` |
   | `testrepo/` | the same, plus `pytest` |
 
-  Segments are split on `|`, `;`, `&&` and `||`, so pipes and globs work while
-  `cat x | sh` is refused. `$(…)` and backtick command substitution are refused outright.
-  Anything else returns `exit=127 command not permitted`.
+  Segments are split on `|`, `;`, `&&` and `||`, so pipes and globs work while `cat x | sh` is
+  refused. `$(…)` and backtick command substitution are refused outright. Anything else returns
+  `exit=127 command not permitted`.
 - Per-command timeout 30 s. No network access.
 - **All tool output is truncated to 4000 characters**, with an explicit trailing marker:
 
@@ -402,17 +366,16 @@ the model.
 
 ### 4.7 What the truncation limit implies
 
-This is a consequence of §4.6 worth stating plainly, because it shapes the results.
+`data/expenses.csv` is roughly 6 KB against the 4000-character cap, and `read_file` has no
+offset parameter. Several Suite W tasks therefore **cannot** be solved by reading the file: the
+agent must use `run_command` with `python`, `wc` or `grep`, or use `search_files`. The same
+applies to the two long documents used by W08 and T08, whose buried facts sit deliberately
+beyond the cap.
 
-`data/expenses.csv` is roughly 6 KB against a 4000-character cap, and `read_file` has no offset
-parameter. Several Suite W tasks therefore **cannot** be solved by reading the file: the agent
-must use `run_command` with `python`, `wc` or `grep`, or use `search_files`. The same applies to
-the two long documents used by W08 and T08, whose buried facts sit deliberately beyond the cap.
-
-This is intended. It tests whether a model can recognise truncation and change approach — a
-core agent behaviour — and the truncation marker tells it exactly what happened. It is also
-expected to be a major source of failure for small models, and should be read as a finding
-rather than as an artefact of the harness.
+This is intended: it tests whether a model can recognise truncation and change approach, a core
+agent behaviour, and the truncation marker tells it exactly what happened. It is also expected
+to be a major source of failure for small models, and should be read as a finding rather than
+as a harness artefact.
 
 ### 4.8 Loop termination
 
@@ -429,25 +392,21 @@ The run ends on whichever occurs first:
 | The backend fails mid-stream (an `openai.APIError`, not a malformed response) | `server_error` |
 
 `empty_answer` is separated from `final_answer` because a reasoning model can spend an entire
-turn in `reasoning_content` and emit nothing else. Grading that as an empty answer the model
-chose to give would misattribute a generation failure to a wrong answer.
+turn in `reasoning_content` and emit nothing else; grading that as a chosen empty answer would
+misattribute a generation failure to a wrong answer.
 
 **Precedence.** Conditions are evaluated in the order they occur, so the earliest trigger wins.
 Repeating one malformed call therefore reports `loop_detected` at the third call, not
 `malformed_calls` at the fifth: three identical calls is stuck behaviour whatever their
 validity. `malformed_calls` consequently means *varying* invalid calls — the model cannot
-format arguments — which is a different finding from being stuck, and the two are worth
-distinguishing in failure analysis.
+format arguments — a different finding from being stuck.
 
-`server_error` covers a backend failure mid-stream (`openai.APIError`), not a malformed response
-from the model. §4.5's no-repair rule applies to the model's mistakes; a mid-stream server
-failure is an infrastructure fault, so the run ends and is recorded rather than retried or left
-to crash the whole stage.
-
-`server_error` is excluded from §4.2's degenerate-decoding rate: a backend crash is not
-something recommended-default sampling would fix. It is tracked separately
-(`harness/report.py`'s `server_error_rate`). See [`findings.md`](findings.md) for a live
-instance of this and its root cause.
+`server_error` covers a backend failure mid-stream (`openai.APIError`), not a malformed
+response from the model. §4.5's no-repair rule applies to the model's mistakes; a mid-stream
+server failure is an infrastructure fault, so the run ends and is recorded rather than retried
+or left to crash the stage. It is excluded from §4.2's degenerate-decoding rate and tracked
+separately (`harness/report.py`'s `server_error_rate`) — see [`findings.md`](findings.md) for a
+live instance and its root cause.
 
 ---
 
@@ -469,12 +428,12 @@ Each term is defined against a specific observable so two independent implementa
 Generation throughput subtracts one token because the first token had already arrived at
 `t_first` and did not occur within the generation window.
 
-`overhead_median` is measured once per session: 20 requests with a minimal prompt and a small
-generation limit (`max_tokens=8`), taking the median TTFT. The limit is not 1 because LM Studio
-can finish on the limit without emitting a token delta, leaving nothing to time; TTFT is time to
-the *first* token, so the limit does not affect the measurement provided tokens stream at all. It absorbs HTTP, serialisation and scheduler overhead.
-Calibration that yields no timed sample **fails loudly** rather than defaulting to zero, which
-would silently leave prompt tok/s unadjusted.
+`overhead_median` is measured once per session: 20 requests with a minimal prompt and
+`max_tokens=8`, taking the median TTFT. It absorbs HTTP, serialisation and scheduler overhead.
+The limit is 8, not 1, because LM Studio can finish on the limit without emitting a token
+delta, leaving nothing to time; TTFT is time to the *first* token, so the limit does not affect
+the measurement provided tokens stream at all. Calibration that yields no timed sample **fails
+loudly** rather than defaulting to zero, which would silently leave prompt tok/s unadjusted.
 
 > **Reasoning tokens count as tokens.** Some models emit `reasoning_content` before any
 > `content`, and LM Studio reports the count in
@@ -496,7 +455,7 @@ would silently leave prompt tok/s unadjusted.
 | **Swap delta** | `sysctl vm.swapusage` used-bytes at run end minus at run start. |
 
 > **Why dirty + clean, and not `phys_footprint` or RSS.** The two runtimes put the weights in
-> different classes of memory, and each of the obvious metrics is blind to exactly one of them:
+> different classes of memory, and each obvious metric is blind to exactly one of them:
 >
 > | | weights land in | `phys_footprint` | RSS |
 > |---|---|---|---|
@@ -505,17 +464,15 @@ would silently leave prompt tok/s unadjusted.
 >
 > `phys_footprint` counts dirty pages, so it excludes the clean file-backed pages llama.cpp
 > `mmap`s the GGUF into. RSS excludes the GPU-owned Metal buffers MLX allocates. Either choice
-> biases the runtime comparison — question 1 of §1 — by roughly the size of the model.
->
-> Summing the Dirty and Clean columns counts both: 2980 MB and 3310 MB for those two artefacts.
+> biases the runtime comparison — question 1 of §1 — by roughly the size of the model. Summing
+> the Dirty and Clean columns counts both: 2980 MB and 3310 MB for those two artefacts.
 > `Reclaimable` is **not** added; it is a subset of what those columns already report.
 
 This is an upper bound on what must stay resident, since clean file-backed pages are evictable
 under memory pressure. That is the bound §2.2 wants: how much unified memory a configuration
-needs to run without swapping.
-
-Sampling cost is ~50 ms, inside the 250 ms interval. `vmmap -summary` yields the same figure
-from its RESIDENT column but takes ~1 s and cannot be used at this rate.
+needs to run without swapping. Sampling costs ~50 ms, inside the 250 ms interval; `vmmap
+-summary` yields the same figure from its RESIDENT column but takes ~1 s and cannot be used at
+this rate.
 
 > **Rejected: a system-wide `vm_stat` delta.** An earlier revision measured system-wide
 > committed memory (wired + active + compressed) against a no-model baseline, to escape the
@@ -526,15 +483,13 @@ from its RESIDENT column but takes ~1 s and cannot be used at this rate.
 
 The inference process is discovered at runtime, never hardcoded: LM Studio runs backends as
 separate child processes, and they are not alike. llama.cpp runs as `llama-server`; the MLX
-backend runs as a generic `node` process under `~/.lmstudio/.internal`, distinguishable by
-path rather than by name. Candidates are ranked by the same dirty + clean measure the sampler
-uses, so ranking cannot prefer a process that merely scores well on a metric blind to the
-backend in play, and a candidate too small to plausibly hold a model is refused — reporting no
-figure beats silently sampling the wrong process.
-
-Discovery runs **after** the overhead calibration, never straight after load: both backends
-allocate lazily, so a backend probed too early can sit below the plausibility floor and be
-rejected.
+backend runs as a generic `node` process under `~/.lmstudio/.internal`, distinguishable by path
+rather than by name. Candidates are ranked by the same dirty + clean measure the sampler uses,
+so ranking cannot prefer a process that merely scores well on a metric blind to the backend in
+play, and a candidate too small to plausibly hold a model is refused — reporting no figure
+beats silently sampling the wrong process. Discovery runs **after** the overhead calibration,
+never straight after load: both backends allocate lazily, so a backend probed too early can sit
+below the plausibility floor and be rejected.
 
 `sudo` is not required. `sudo powermetrics` may be used for supplementary investigation but is
 never part of the protocol.
@@ -545,7 +500,8 @@ excluded from medians.
 
 ### 5.3 Metric availability is per driver
 
-`native` produces every metric above. Under `pi`, only driver-independent metrics are mandatory:
+`native` produces every metric above. Under `pi`, only driver-independent metrics are
+mandatory:
 
 ```
 task success, progress score, step count, tool-call counts,
@@ -572,8 +528,8 @@ meaningless on any repeated run.
 
 ## §6 Fixtures
 
-Both fixtures are synthetic, committed and version-pinned. They are produced by generator
-scripts, and **each generator also emits the expected values the assertions read**:
+Both fixtures are synthetic, committed and version-pinned, produced by generator scripts. Each
+generator also emits the expected values the assertions read:
 
 ```
 fixtures/build_workspace.py  ->  fixtures/workspace/  +  fixtures/expected/W*.json
@@ -581,10 +537,10 @@ fixtures/build_testrepo.py   ->  fixtures/testrepo/   +  fixtures/expected/T*.js
 ```
 
 Assertions load expected values from `fixtures/expected/`, never from constants written into
-the task definitions. A fixture and its assertions therefore cannot drift apart. Where an
-expected value describes the source itself — which modules raise `ValidationError`, how many
-test files exist — the generator **derives it by scanning the generated tree** rather than
-listing it by hand.
+the task definitions, so a fixture and its assertions cannot drift apart. Where an expected
+value describes the source itself — which modules raise `ValidationError`, how many test files
+exist — the generator **derives it by scanning the generated tree** rather than listing it by
+hand.
 
 Both generators are seeded and reproduce byte-for-byte. Regenerating either bumps
 `task_set_version` (§11).
@@ -612,7 +568,7 @@ Design decisions the generator implements:
 
 - `config/settings.yaml` names `config/fx_rates.yaml` as the conversion source and
   `data/headcount.csv` as the authoritative headcount source. A correct W02, W06 or W09 answer
-  therefore requires following the configuration rather than guessing.
+  requires following the configuration rather than guessing.
 - `policy/README.md` carries a `SUPERSEDED` marker pointing at `policy/travel.md`, and its
   figures differ. An answer taken from the wrong file is detectably wrong.
 - `data/expenses.csv` mixes GBP, EUR and USD. **Non-GBP amounts are whole units and the rates
@@ -661,9 +617,9 @@ The base tree has exactly one failing test: `test_split_posting_balances`.
 
 ### 6.3 Fixture variants
 
-`tests/test_close.py` is deliberately **not** in the base tree. It is added by the T09 fixture
+`tests/test_close.py` is deliberately **not** in the base tree; it is added by the T09 fixture
 variant. Without this, T03's "the whole suite passes" assertion would have to except an
-unrelated failure, which is exactly the kind of fudge that makes a benchmark unfalsifiable.
+unrelated failure — exactly the kind of fudge that makes a benchmark unfalsifiable.
 
 A variant is applied to the fresh copy **before** the pristine snapshot is taken, so a
 variant's own files never register as a change made by the agent.
@@ -672,12 +628,11 @@ variant's own files never register as a change made by the agent.
 
 ## §7 Task suites
 
-Two suites of ten tasks, **matched category-for-category in the same order**.
-
-> **What the split is for.** The difference between a configuration's two scores isolates code
-> comprehension from agent mechanics. Respectable W-scores with zero T-scores means the model
-> can drive an agent loop but cannot read code. Zero on both means it cannot drive the loop at
-> all. These are different findings and the benchmark must not conflate them.
+Two suites of ten tasks, **matched category-for-category in the same order**. The difference
+between a configuration's two scores isolates code comprehension from agent mechanics:
+respectable W-scores with zero T-scores means the model can drive an agent loop but cannot read
+code; zero on both means it cannot drive the loop at all. These are different findings, and the
+benchmark must not conflate them.
 
 Every prompt is fixed text with no per-model adaptation. Each task declares a `min_context`; a
 task is **skipped** rather than silently truncated when the configuration's context is smaller.
@@ -746,8 +701,8 @@ The oracle constraint matters: an oracle that read `fixtures/expected/` would pr
 the values exist on disk. Solving through the tool surface proves the information is actually
 **reachable by an agent**, which is the property under test.
 
-The adversarial control is expected to reach progress 2–3 on the decoy tasks — it does the
-work and produces right-shaped output, and is still wrong. That is the intended signature.
+The adversarial control is expected to reach progress 2–3 on the decoy tasks — it does the work
+and produces right-shaped output, and is still wrong. That is the intended signature.
 
 > If the oracle fails a task, **the task or the assertion is wrong, not the model.** Fix it and
 > bump `task_set_version`.
@@ -764,9 +719,9 @@ Stages 0–4 use the `native` driver exclusively.
 
 ### 9.0 Model lifecycle
 
-Unified memory holds one model at a time. A stage therefore **loads its model once at the
-start and unloads it once at the end**, via the `lms` CLI — never per run, which would let load
-time dominate wall clock and distort every §5 timing.
+Unified memory holds one model at a time. A stage therefore **loads its model once at the start
+and unloads it once at the end**, via the `lms` CLI — never per run, which would let load time
+dominate wall clock and distort every §5 timing.
 
 Anything already resident is unloaded first, so a stage never runs against a model it did not
 choose, and the unload always happens on the way out, including on failure, so an aborted stage
@@ -780,19 +735,19 @@ Three trivial single-tool tasks (`harness/tasks/smoke.py`) × 3 repetitions per 
 
 **Gate:** fewer than 2/3 of a configuration's Stage 0 runs include a valid tool call ⇒ the
 configuration is marked `not tool-capable`, excluded from all agent stages, and retained in
-Phase 1 only. This is an aggregate rate over the 9 runs (≥6 of 9), not a per-task count — a
+Phase 1 only. This is an aggregate rate over the 9 runs (≥6 of 9), not a per-task count: a
 single Stage 0 task is solved in exactly one tool call, so "2 of 3" per task would not be a
-meaningful quantity. `harness/stages.py`'s `run_stage0` implements this.
+meaningful quantity. Implemented by `harness/stages.py`'s `run_stage0`.
 
 Stage 0 is a pre-flight check that the tool-calling plumbing works, not a capability
 classifier. It exists to catch a broken configuration or harness mismatch — bad tool-call
 plumbing, a corrupted artefact, a driver regression — before a stage measured in hours is run
-against it. Reconnaissance against the six §2 configurations (2026-08-27) showed every one of
-them emits valid tool calls with zero formatting errors, so the gate is expected to exclude
-nothing in the current set. It is retained regardless: the configuration set is a snapshot,
-not a permanent fixture, and a model that genuinely cannot call tools would otherwise be
-discovered only by losing Stage 2A hours to it. Weak-but-valid tool calling is *measured* by
-Suite W and the Stage 2A gate (§7, §9 Stage 2A), not gated here.
+against it. Reconnaissance against the six §2 configurations (2026-08-27) showed every one
+emits valid tool calls with zero formatting errors, so the gate is expected to exclude nothing
+in the current set. It is retained regardless: the configuration set is a snapshot, not a
+permanent fixture, and a model that genuinely cannot call tools would otherwise be discovered
+only by losing Stage 2A hours to it. Weak-but-valid tool calling is *measured* by Suite W and
+the Stage 2A gate (§7, §9 Stage 2A), not gated here.
 
 ### Stage 1 — raw inference
 
@@ -804,45 +759,42 @@ the remaining 4 is reported alongside min and max.
 - Every prompt carries the §5.4 nonce prefix.
 - A repetition counts only if `completion_tokens ≥ 128`; otherwise it is retried with the
   alternate long-form prompt.
-- Metrics: prompt tok/s, generation tok/s, TTFT, peak memory, swap delta, total time, input
-  and output token counts.
+- Metrics: prompt tok/s, generation tok/s, TTFT, peak memory, swap delta, total time, input and
+  output token counts.
 
 Model load time is **not** a metric. §9.0 loads each configuration once per stage precisely
 because load duration is not part of what the benchmark measures: TTFT and every other §5.1
 timing are defined against an already-serving model, and the duration of `lms load` is a
 property of LM Studio's loader, not of agent work.
 
-**Corpus**: `fixtures/build_prompts.py` writes `fixtures/prompts/{8k,16k}_{primary,alternate}.txt`
-— synthetic long-form documents (deterministic, rng-templated, same spirit as
-`build_workspace.py`), sized to the tier by a 4-characters-per-token heuristic used only to
-decide how much filler text to generate. Each ends with a closing instruction asking for a long,
-detailed response, so a repetition should reliably clear the 128-token floor. `primary` and
-`alternate` per tier are independently generated bodies, not the same text with a different
-final line, so a retry isn't just asking the same content again.
+**Corpus.** `fixtures/build_prompts.py` writes
+`fixtures/prompts/{8k,16k}_{primary,alternate}.txt` — synthetic long-form documents
+(deterministic, rng-templated, same spirit as `build_workspace.py`), sized to the tier by a
+4-characters-per-token heuristic used only to decide how much filler text to generate. Each
+ends with a closing instruction asking for a long, detailed response, so a repetition should
+reliably clear the 128-token floor. `primary` and `alternate` per tier are independently
+generated bodies, not the same text with a different final line, so a retry isn't just asking
+the same content again.
 
-**Record mapping** (`harness/stages.py`'s `run_stage1`): a repetition is one §10.1 record either
-way — a retried attempt replaces the primary one, it doesn't add a second record for the same
-repetition. `passed`/`progress_score` are `null` (no assertion exists for raw inference);
-`tool_calls`/`invalid_calls`/`path_errors` are `0`; `termination_reason` is the model's actual
-`finish_reason` (e.g. `"stop"`/`"length"`) rather than one of `native`'s §4.8 values, which don't
-apply outside the agent loop.
+**Record mapping** (`harness/stages.py`'s `run_stage1`): a retried attempt replaces the primary
+one — one §10.1 record per repetition, never a second record. `passed`/`progress_score` are
+`null` (no assertion exists for raw inference); `tool_calls`/`invalid_calls`/`path_errors` are
+`0`; `termination_reason` is the model's actual `finish_reason` (e.g. `"stop"`/`"length"`)
+rather than one of `native`'s §4.8 values, which don't apply outside the agent loop.
 
 ### Stage 2A — Suite W at 8K
 
 All tool-capable configurations, 3 repetitions per task. **180 runs.**
 
-**Gate:** a configuration proceeds to Stage 2B if it passes **≥3 of 10** on Suite W **or** has a
-mean progress score **≥2.5**. Configurations that fail are reported with their W results and go
-no further.
-
-Neither half of that says how 3 per-task repetitions collapse into one task-level pass/fail, or
-what the mean is taken over. Resolved (`harness/stages.py`'s `run_stage2a`):
+**Gate:** a configuration proceeds to Stage 2B if it passes **≥3 of 10** on Suite W **or** has
+a mean progress score **≥2.5**. Configurations that fail are reported with their W results and
+go no further. Resolved as follows (`harness/stages.py`'s `run_stage2a`):
 
 - A task counts toward "3 of 10" on a **strict majority of its repetitions** (≥2 of 3) — the
-  standard resolution of a repeated binary trial, and well-defined here since 3 is odd.
+  standard resolution of a repeated binary trial, well-defined here since 3 is odd.
 - **Mean progress score** is the mean over every included run (every repetition of every task
-  that was not `min_context`-skipped), not a per-task mean of means. With uniform repetitions
-  per task the two are the same figure; this is simpler when they are not.
+  not `min_context`-skipped), not a per-task mean of means. With uniform repetitions per task
+  the two are the same figure; this is simpler when they are not.
 - A task skipped for `min_context` contributes no runs and is excluded from both halves of the
   gate — it is not solvable at this context by construction, and scoring it as a failure would
   understate a configuration that is otherwise capable at a context it wasn't given.
@@ -854,8 +806,7 @@ Survivors of the 2A gate only, 3 repetitions per task.
 ### Stage 3 — 16K
 
 Both suites, for configurations above the floor at 8K. Repetitions: 3 per task, as at Stage
-2A/2B — not restated in the original text, but nothing suggests a different methodology at 16K,
-and `harness/stages.py`'s `run_stage3` uses the same figure (`AGENT_REPETITIONS`).
+2A/2B.
 
 ### Stage 4 — long context
 
@@ -868,33 +819,26 @@ tool-call accuracy, recovery and total execution time; report the answer either 
 ### Stage 5A — driver cross-check
 
 The two or three best configurations re-run through the `pi` driver at 8K, both suites.
-Reported as a **separate table** answering one question: how much of the observed failure is the
-model, and how much is our bare loop.
+Reported as a **separate table** answering one question: how much of the observed failure is
+the model, and how much is our bare loop.
 
 ### Stage 5B — optimisation
 
 Alternative quantisations, recommended-default sampling (if §4.2 triggered it), and the context
-compaction experiment:
-
-> Compare a full conversation and tool history against a compacted history containing only
-> relevant state, on the same tasks and configurations. The question is whether maintaining a
-> large context is actually beneficial for the agent, not whether the model supports it.
-
-Nothing in Stage 5B feeds the controlled comparison.
-
-What each part needs:
+compaction experiment: full conversation and tool history against a compacted history
+containing only relevant state, on the same tasks and configurations. The question is whether
+maintaining a large context is actually beneficial for the agent, not whether the model
+supports it. Nothing in Stage 5B feeds the controlled comparison.
 
 - **Alternative quantisations** need no new code: `config_id` is already a free parameter, so
   this is running the existing stages against a configuration outside the primary six.
 - **Recommended-default sampling** runs once the §4.2 trigger fires. `harness/report.py`'s
-  `is_degenerate_triggered` checks raw records for it (repetition loops, empty completions, or a
-  malformed-call/timeout termination, at >20% of a configuration's agent runs). The sampling pass
-  itself is not automatic — it's an operator action once the detector fires, and there is nothing
-  to trigger it against until real Stage 2A/2B data exists.
-- **The context-compaction experiment** is built as a runnable stage:
-  `harness/stages.py`'s `run_stage5b_compact()`, using `NativeDriver(history_mode="compact")` —
-  see §4.1's `native-compact` row. Not part of `run_full()`; run separately, since it never
-  feeds the controlled comparison.
+  `is_degenerate_triggered` checks raw records for it (repetition loops, empty completions, or
+  a malformed-call/timeout termination, at >20% of a configuration's agent runs). The sampling
+  pass itself is an operator action once the detector fires, not automatic.
+- **The context-compaction experiment** is a runnable stage: `harness/stages.py`'s
+  `run_stage5b_compact()`, using `NativeDriver(history_mode="compact")` (§4.1). Not part of
+  `run_full()`; run separately.
 
 ### 9.1 Repetition handling
 
@@ -906,7 +850,7 @@ every repetition of a task, and the raw JSONL is written and resumed one run at 
 record already on disk is never rewritten (`way-of-working.md`'s append-only rule) once its
 sibling repetitions land. Every raw record therefore carries `flaky: null`; grouping by
 `(config_id, suite, task_id)` and checking unanimity of `passed` happens when a report is
-generated, exactly as "reports regenerate from JSONL only" already requires.
+generated.
 
 ### 9.2 Run budget
 
@@ -917,8 +861,8 @@ generated, exactly as "reports regenerate from JSONL only" already requires.
 | Stage 2A | 180 | 6–12 h |
 | Stage 2B | ≤180, survivors only | 6–12 h |
 
-The full unpruned matrix — 2 suites × 2 contexts × 10 tasks × 3 repetitions × 6 configurations
-— is **720 agent runs** and is not attempted. The 2A gate and 8K-before-16K staging keep this
+The full unpruned matrix — 2 suites × 2 contexts × 10 tasks × 3 repetitions × 6 configurations —
+is **720 agent runs** and is not attempted. The 2A gate and 8K-before-16K staging keep this
 tractable. Each gate is an explicit go/no-go decision point, not a formality.
 
 ### 9.3 Running the full sequence for one configuration
@@ -926,11 +870,11 @@ tractable. Each gate is an explicit go/no-go decision point, not a formality.
 `harness/stages.py`'s `run_full(config_id)` (`python -m harness.stages full <config_id>`)
 sequences Stage 0 → Stage 1 (8K, 16K) → Stage 2A → Stage 2B → Stage 3 for one configuration and
 stops there, on the first gate failure or a stage that doesn't complete
-(`unsupported`/`oversized`). It does not continue to Stage 4: that stage's trigger ("only where
-Stage 3 showed failures attributable to context limits") is a judgement about failure *cause*,
-not a mechanical threshold like Stage 0/2A's gates, and automating past it would be exactly the
-formality §9.2 warns against. Stage 5A needs the `pi` driver; Stage 5B is a standalone
-experiment that never feeds the controlled comparison (above). Both are separate, manual steps.
+(`unsupported`/`oversized`). It does not continue to Stage 4: that stage's trigger — "only
+where Stage 3 showed failures attributable to context limits" — is a judgement about failure
+*cause*, not a mechanical threshold like Stage 0/2A's gates, and automating past it would be
+exactly the formality §9.2 warns against. Stage 5A needs the `pi` driver; Stage 5B is a
+standalone experiment. Both are separate, manual steps.
 
 ---
 
@@ -956,10 +900,9 @@ and are never hand-edited.
 
 ### 10.2 Headline metric
 
-> **Successful tasks per hour of wall clock**, reported separately per suite.
-
-Never averaged across suites. Raw token throughput does not determine the winner if a faster
-configuration fails materially more tasks. Ties are broken by peak memory.
+**Successful tasks per hour of wall clock**, reported separately per suite and never averaged
+across suites. Raw token throughput does not determine the winner if a faster configuration
+fails materially more tasks. Ties are broken by peak memory.
 
 The denominator is every run's wall clock in that suite's stage, not only the passing runs' —
 a configuration that fails fast must not score better than one that fails slowly by the same
@@ -978,19 +921,19 @@ count; both cost real wall clock. `harness/report.py`'s `suite_summary` implemen
 
 The Stage 5A cross-check is a separate table, never merged into this one.
 
-`harness/report.py` builds this table from raw JSONL. Two columns need a source and a
-computation stated precisely, since neither is obvious from the schema alone:
+`harness/report.py` builds this table from raw JSONL. Two columns need their source stated
+precisely:
 
 - **TTFT / Gen tok/s / Prompt tok/s / Peak RAM / Swap** come from **Stage 1 at 8K only**, never
   from Suite W/T runs — §5.4 is explicit that Phase 2 (agent) throughput "must not be compared
-  across configurations" once the prompt cache is warm past turn 1, and Stage 1's nonce-prefixed
-  raw inference is the only clean measurement. First repetition discarded; median of the
-  remaining four, swap-flagged runs excluded from the median but `Swap` still reports whether any
-  occurred (§9 Stage 1).
+  across configurations" once the prompt cache is warm past turn 1, and Stage 1's
+  nonce-prefixed raw inference is the only clean measurement. First repetition discarded;
+  median of the remaining four, swap-flagged runs excluded from the median but `Swap` still
+  reports whether any occurred (§9 Stage 1).
 - **Verdict** is a mechanical stage-progression status (`excluded: not tool-capable`, `excluded:
-  failed Stage 2A gate`, `proceeded to Stage 3`, …), not the qualitative judgement this section's
-  prose might suggest — that is §10.4's conclusion, written by a person once real
-  multi-configuration data exists, not generated by this table.
+  failed Stage 2A gate`, `proceeded to Stage 3`, …), not a qualitative judgement. The
+  qualitative conclusion is §10.4, written by a person once real multi-configuration data
+  exists.
 
 ### 10.4 Reporting the three questions
 
@@ -1034,6 +977,6 @@ results**:
 - a driver version
 
 Stage 0's three tasks (`harness/tasks/smoke.py`) are not "either task set" above — they are a
-separate pre-flight check under their own `suite="0"`, never Suite W or T, and don't touch the
-W/T task definitions `task_set_version` describes. Adding or changing them does not bump
-`task_set_version`; nothing already recorded under a given version becomes incomparable.
+separate pre-flight check under their own `suite="0"`, never Suite W or T. Adding or changing
+them does not bump `task_set_version`; nothing already recorded under a given version becomes
+incomparable.

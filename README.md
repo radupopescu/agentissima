@@ -1,19 +1,18 @@
 # interview
 
-A benchmark for local agent LLMs on Apple silicon, run through LM Studio.
+A benchmark for local agent LLMs on Apple silicon, run through LM Studio. It measures agent
+task success, not token throughput alone, and answers three separable questions:
 
-It answers three separable questions — MLX or llama.cpp/Metal, LFM2.5-2.6B or
-Ternary-Bonsai-8B, and which quantisation gives the best quality/latency/memory trade-off —
-by measuring agent task success rather than token throughput alone.
+1. **Runtime** — MLX or llama.cpp/Metal, at equivalent quantisation
+2. **Model** — LFM2.5-2.6B or Ternary-Bonsai-8B, on agent task success
+3. **Operating point** — which quantisation gives the best quality/latency/memory trade-off
 
 | Document | Purpose |
 |---|---|
 | [`doc/benchmark.md`](doc/benchmark.md) | The specification. Authoritative on what is measured and how |
 | [`doc/way-of-working.md`](doc/way-of-working.md) | Methodology and invariants for developing the project |
 | [`doc/implementation-plan.md`](doc/implementation-plan.md) | Remaining work, in pickup-ready detail |
-| [`doc/findings.md`](doc/findings.md) | Empirical findings from real runs — model behaviour, environment quirks |
-
----
+| [`doc/findings.md`](doc/findings.md) | Empirical findings from real runs |
 
 ## Requirements
 
@@ -21,44 +20,36 @@ by measuring agent task success rather than token throughput alone.
 - Python 3.14 and [`uv`](https://docs.astral.sh/uv/)
 - LM Studio, for the model-facing stages only
 
-## Setup
-
 ```sh
 uv venv --python 3.14
 uv pip install pyyaml openai pytest
 ```
 
-Run everything through `.venv/bin/python`. The sandbox puts `.venv/bin` on `PATH` for
-commands it executes, so `pytest` and `python` resolve inside sandboxed runs.
+Run everything through `.venv/bin/python`. The sandbox puts `.venv/bin` on `PATH` for commands
+it executes, so `pytest` and `python` resolve inside sandboxed runs.
 
----
+## Run without a model
 
-## What you can run today
+No LM Studio, no network, no model downloads required.
 
-The whole measurement apparatus except the part that talks to a model. No LM Studio, no
-network, no model downloads required.
-
-### Generate the fixtures
+**Generate the fixtures** — seeded, byte-for-byte reproducible, committed, and version-pinned.
+Each generator emits the fixture *and* the expected values the assertions read, so the two
+cannot drift apart.
 
 ```sh
 .venv/bin/python fixtures/build_workspace.py    # workspace/ + expected/W*.json
 .venv/bin/python fixtures/build_testrepo.py     # testrepo/  + expected/T*.json
 ```
 
-Both are seeded and reproduce byte-for-byte. They are committed deliberately: results are only
-comparable against a known fixture revision. **Regenerating a fixture bumps
-`task_set_version`** and invalidates comparison with earlier results — see §11.
+Regenerating a fixture bumps `task_set_version` and invalidates comparison with earlier
+results (`benchmark.md` §11).
 
-Each generator emits the fixture *and* the expected values the assertions read, so the two
-cannot drift apart.
-
-### Run the validation gates
+**Run the validation gates** — blocking preconditions (§8). No model is benchmarked until all
+pass.
 
 ```sh
 .venv/bin/python -m harness.gates
 ```
-
-These are blocking preconditions (§8). No model is benchmarked until all pass.
 
 | Gate | Requirement | Rules out |
 |---|---|---|
@@ -68,68 +59,42 @@ These are blocking preconditions (§8). No model is benchmarked until all pass.
 | driver parity | pending | Needs the `pi` driver |
 
 The oracle reaches every answer *through the same five tools an agent would use* — it never
-reads the expected values. That is what makes 20/20 mean the information is genuinely
-reachable, rather than merely present on disk.
+reads the expected values. 20/20 therefore means the information is genuinely reachable by an
+agent, not merely present on disk. If the oracle fails a task, the task or its assertion is
+wrong, not the model.
 
-If the oracle fails a task, the task or its assertion is wrong, not the model.
-
-### Run the harness's own tests
+**Run the harness's own tests** — these guard the properties the benchmark's validity rests on:
+tool calls are never repaired (§4.5), output truncation is exact, and the sandbox cannot be
+escaped (§4.6).
 
 ```sh
 .venv/bin/python -m pytest -q
 ```
 
-These guard the properties the benchmark's validity rests on: tool calls are never repaired
-(§4.5), output truncation is exact, and the sandbox cannot be escaped (§4.6).
+## Run against a model
 
----
+Requires LM Studio running. Smoke-check first: load a model, run one task through the `native`
+driver, unload.
 
-### Smoke-check against a real model
-
-Requires LM Studio running. Loads a model, runs one task through the `native` driver, unloads.
-
-Models are named by **path**, not by LM Studio's model key: keys shift as models are installed
-and removed (§2.1). `lms ls --json` lists the paths.
+Models are addressed by **path**, never by LM Studio's model key (§2.1). `lms ls --json` lists
+the paths.
 
 ```sh
 .venv/bin/python -m harness.smoke   # LiquidAI/LFM2.5-2.6B-MLX-8bit, task W01
 .venv/bin/python -m harness.smoke LiquidAI/LFM2.5-2.6B-GGUF/LFM2.5-2.6B-Q8_0.gguf W05
 ```
 
-An exact key still works, but anything ambiguous is refused rather than resolved to whichever
-model happens to match first.
+Sanity checks: `final_finish_reason` should be `stop` rather than `length`, and `peak memory`
+should sit slightly above the model's on-disk size. A much smaller figure means process
+discovery matched a helper rather than the backend.
 
-Not a benchmark stage — a sanity check after touching the client, the loop or the metrics.
-`final_finish_reason` should be `stop` rather than `length`, and `peak memory` should sit a
-little above the model's on-disk size — a much smaller figure means process discovery matched
-a helper rather than the backend.
-
----
-
-## What is not built yet
-
-The configuration probes and environment capture (§2.1, §3), the Stage 0 tasks, the stage
-runners and results output (§9, §10), reporting, and the `pi` driver (§4.1).
-
-The LM Studio client, the `native` agent loop and the metrics layer are built and verified
-end-to-end against a real model, but nothing yet orchestrates them into a stage.
-
-Consequently **no benchmark stage can be run yet.** See
-[`doc/implementation-plan.md`](doc/implementation-plan.md) for the ordered milestones and the
-interfaces new code must fit.
-
----
-
-## Running the benchmark, once built
-
-Recorded here so the intended workflow is clear. Configuration resolution works today
-(`setup.probe_config`); the stage runner and reporting below do not.
+**Stages** — one-off configuration probes, then per-configuration stages and reporting:
 
 ```sh
-# One-off, per machine. Metadata only, no model loaded (§2.1).
+# Once per machine. Metadata only, no model loaded (§2.1).
 .venv/bin/python -m setup.probe_config                # every §2 configuration
-.venv/bin/python -m setup.probe_config --only LFM-M8   # a single one
-.venv/bin/python -m setup.probe_config --hash          # also pin artefact bytes (§2.1)
+.venv/bin/python -m setup.probe_config --only LFM-M8  # a single one
+.venv/bin/python -m setup.probe_config --hash         # also pin artefact bytes (§2.1)
 
 # Per configuration
 .venv/bin/python -m harness.stages stage0  --config LFM-M8
@@ -141,14 +106,21 @@ Recorded here so the intended workflow is clear. Configuration resolution works 
 .venv/bin/python -m harness.report results/<session>/
 ```
 
-Before any of it: LM Studio serving on `localhost:1234` with exactly one model loaded, on AC
+Before any stage: LM Studio serving on `localhost:1234` with exactly one model loaded, on AC
 power, Low Power Mode off. The harness asserts these and aborts rather than warning (§3.1).
 
 Stage 0 is the cheap gate — three trivial tool calls per configuration. A configuration that
 cannot emit a valid tool call is excluded from the agent stages there, before it consumes the
-6–12 hours that Stage 2A takes.
+6–12 hours Stage 2A takes.
 
----
+## Status
+
+Built and verified against a real model: the LM Studio client, the `native` agent loop, the
+metrics layer, Stage 0 and Stage 1 for all six configurations, and reporting against the data
+those produced. The Stage 2A/2B/3 runners and `run_full()` are implemented and unit-tested but
+not yet run live. Not built: the `pi` driver and Stage 5B's recommended-default sampling pass.
+
+See [`doc/implementation-plan.md`](doc/implementation-plan.md) for the ordered milestones.
 
 ## Layout
 
@@ -177,6 +149,11 @@ harness/
   driver_native.py        the agent loop and its termination rules
   metrics.py              timing, memory sampler, swap window
   lmstudio.py             model load/unload via the `lms` CLI
+  stages.py               stage runner: stage0–stage3, run_full(), Stage 5B compaction
+  report.py               tables regenerated from raw JSONL
+  environment.py          environment capture (§3)
   smoke.py                one-task end-to-end check against a real model
+setup/
+  probe_config.py         per-configuration metadata and artefact hashing (§2.1)
 tests/                    tests for the harness itself
 ```
