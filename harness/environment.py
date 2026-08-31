@@ -28,6 +28,8 @@ from .admissibility import UNSUPPORTED, classify_declared
 from .client import DEFAULT_EXTRA_BODY, DEFAULT_SAMPLING
 from .driver_native import DRIVER_VERSION as NATIVE_DRIVER_VERSION
 from .driver_pi import DRIVER_VERSION as PI_DRIVER_VERSION
+from .driver_pi import ISOLATION_FLAGS as PI_ISOLATION_FLAGS
+from .driver_pi import pi_version
 from .metrics import swap_used_bytes
 from .prompt import prompt_sha256
 from .version import TASK_SET_VERSION
@@ -44,6 +46,29 @@ _DRIVER_VERSIONS = {
     "native-compact": NATIVE_DRIVER_VERSION,
     "pi": PI_DRIVER_VERSION,
 }
+
+
+def _pi_provenance() -> dict[str, Any]:
+    """What is recorded about `pi` rather than controlled (§4.1).
+
+    Everything here is a drift vector we deliberately do not freeze, so it must
+    at least be visible after the fact. `thinking_level` is constant: pi's
+    `getSupportedThinkingLevels` returns `["off"]` for any model whose catalogue
+    entry does not declare `reasoning`, and `setup/pi_config/models.json`
+    declares only `{"id": "bench"}` -- so `--thinking` is inert here. LFM2.5
+    still emits `reasoning_content`; that is the model's own behaviour, not
+    something pi requested.
+    """
+    return {
+        "version": pi_version(),
+        "isolation_flags": list(PI_ISOLATION_FLAGS),
+        "system_prompt": "pi default (not ours; not hashed)",
+        "thinking_level": "off",
+        # Not disabled: pi loads the fixture's AGENTS.md from the working
+        # directory root into its system prompt. W07/T07 are therefore not
+        # comparable with `native`, which exposes it only on a tool read.
+        "context_files_discovered": True,
+    }
 
 
 class PreconditionError(RuntimeError):
@@ -354,7 +379,12 @@ def capture(
         "harness_git_sha": harness_git_sha(),
         "driver": driver,
         "driver_version": _DRIVER_VERSIONS.get(driver),
-        "system_prompt_sha256": prompt_sha256(extra_rules),
+        # `pi` brings its own system prompt and ours is never sent, so hashing
+        # `harness/prompt.py` for a pi session records a prompt the model did
+        # not receive -- wrong rather than merely absent. The task's
+        # `extra_rules` *is* delivered, via `--append-system-prompt` (§4.3).
+        "system_prompt_sha256": None if driver == "pi" else prompt_sha256(extra_rules),
+        "pi": _pi_provenance() if driver == "pi" else None,
         "fixture_git_sha": fixture_fingerprint(),
         "task_set_version": TASK_SET_VERSION,
         "ac_power": True,

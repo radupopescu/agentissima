@@ -519,3 +519,55 @@ def test_run_stages_threads_driver_through_to_stage2a_and_2b(monkeypatch):
     outcome = stages.run_stages("FAKE", ["stage2a", "stage2b"], driver="pi")
     assert outcome.driver == "pi"
     assert seen == [("2a", "pi"), ("2b", "pi")]
+
+
+# --- run_id uniqueness across drivers ---------------------------------------
+#
+# Two drivers running the same task once shared a `run_id`, and therefore a
+# transcript filename, so the later stage overwrote the earlier one's
+# transcripts (findings.md). The identifier now carries the driver.
+
+
+def _stub_driver_with_transcript(task, sandbox):
+    from harness.types import RunOutcome
+
+    return RunOutcome(
+        task_id=task.id,
+        root=sandbox.root,
+        answer="stub",
+        transcript=[{"role": "assistant", "content": "stub"}],
+    )
+
+
+def _record_with_driver(tmp_path, driver_label):
+    return stages._record_for(
+        STAGE0_TASKS[0],
+        1,
+        config_id="FAKE",
+        suite="W",
+        session_id="FAKE-8192",
+        environment_sha256="deadbeef",
+        context_length=8192,
+        driver=_stub_driver_with_transcript,
+        driver_label=driver_label,
+        pid=None,
+        transcripts_dir=tmp_path / "transcripts",
+    )
+
+
+def test_run_id_and_transcript_path_differ_per_driver(tmp_path):
+    native = _record_with_driver(tmp_path, "native")
+    pi = _record_with_driver(tmp_path, "pi")
+
+    assert native["run_id"] != pi["run_id"]
+    assert native["transcript_path"] != pi["transcript_path"]
+
+
+def test_a_second_driver_does_not_overwrite_the_first_transcript(tmp_path):
+    native = _record_with_driver(tmp_path, "native")
+    _record_with_driver(tmp_path, "pi")
+
+    from pathlib import Path
+
+    assert Path(native["transcript_path"]).is_file()
+    assert len(list((tmp_path / "transcripts").glob("*.json"))) == 2

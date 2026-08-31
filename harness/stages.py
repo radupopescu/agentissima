@@ -281,7 +281,12 @@ def _record_for(
     pid: int | None,
     transcripts_dir: Path,
 ) -> dict:
-    run_id = f"{config_id}-{suite}-{task.id}-r{repetition}"
+    # The driver belongs in the identifier, not just in the stage's file name.
+    # Without it two drivers' runs of the same task share a `run_id` and so a
+    # transcript path, and the later stage silently overwrites the earlier
+    # one's transcripts — which is exactly what happened to the `v4` `native`
+    # Suite W/T transcripts (see implementation-plan.md's defect table).
+    run_id = f"{config_id}-{driver_label}-{suite}-{task.id}-r{repetition}"
 
     sampler = MemorySampler(pid).start() if pid is not None else None
     with SwapWindow() as swap:
@@ -595,7 +600,10 @@ def _stage1_record(
     primary_prompt: str,
     alternate_prompt: str,
 ) -> dict:
-    run_id = f"{config_id}-1-{tier}-r{repetition}"
+    # Stage 1 bypasses the drivers entirely (raw inference, no agent loop), but
+    # carries the driver in `run_id` for the same uniqueness contract as the
+    # agent stages.
+    run_id = f"{config_id}-native-1-{tier}-r{repetition}"
 
     def _attempt(prompt_text: str):
         messages = [{"role": "user", "content": nonce_prefix() + "\n\n" + prompt_text}]
@@ -853,14 +861,14 @@ def main(argv: list[str] | None = None) -> int:
     stage2a = sub.add_parser("stage2a", help="run §9 Stage 2A: Suite W at 8K")
     stage2a.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
     stage2a.add_argument("--context", type=int, default=8192)
-    stage2a.add_argument("--driver", choices=("native", "pi"), default="native")
+    stage2a.add_argument("--driver", choices=("native", "pi"), default="pi")
 
     stage2b = sub.add_parser(
         "stage2b", help="run §9 Stage 2B: Suite T at 8K, for Stage 2A survivors"
     )
     stage2b.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
     stage2b.add_argument("--context", type=int, default=8192)
-    stage2b.add_argument("--driver", choices=("native", "pi"), default="native")
+    stage2b.add_argument("--driver", choices=("native", "pi"), default="pi")
 
     stage5b = sub.add_parser(
         "stage5b-compact", help="run §9 Stage 5B's context-compaction experiment"
@@ -874,7 +882,7 @@ def main(argv: list[str] | None = None) -> int:
         "--stages", required=True,
         help="comma-separated stage names, e.g. stage0,stage1,stage2a,stage2b",
     )
-    run.add_argument("--driver", choices=("native", "pi"), default="native")
+    run.add_argument("--driver", choices=("native", "pi"), default="pi")
 
     args = parser.parse_args(argv)
 

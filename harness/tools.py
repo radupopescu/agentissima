@@ -133,7 +133,7 @@ class ToolCall:
 
 
 def _referenced_paths(name: str, arguments: dict[str, Any]) -> tuple[str, ...]:
-    """Paths a call names directly, used by the progress score (§7.4)."""
+    """Paths a call names directly, used by the progress score (§7.3)."""
     if name in ("read_file", "write_file", "list_files"):
         value = arguments.get("path")
         return (value,) if isinstance(value, str) else ()

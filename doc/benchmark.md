@@ -1,9 +1,10 @@
 # Local LLM Agent Benchmark
 
-**Task set version:** `v4`. See §11 for what invalidates results.
+**Task set version:** `v5`. See §11 for what invalidates results.
 
 | Version | Change |
 |---|---|
+| `v5` | `PiDriver.DRIVER_VERSION` bumped to `2`: the task's `extra_rules` is now delivered via `--append-system-prompt` (it was never sent, inverting W07 and T07), ambient discovery is pinned off, and tool calls are recovered from pi's message log so the progress score works (§4.1, §5.3). §11 lists a driver version among the bumping triggers. `native` behaviour is unchanged, but `task_set_version` is a single global marker, so `v4` results are not comparable under either driver |
 | `v4` | `run_command`'s `v3` fix for `&` backgrounding also split `2>&1`/`1>&2`-style redirection in two, refusing an ordinary command with a nonsensical error (§4.6). Fixed with a lookbehind excluding `&` immediately after `>`. Changes tool behaviour, so `v3` results are not comparable |
 | `v3` | `run_command` sandboxing fixed: absolute paths and `..` no longer reach the real filesystem, `&` backgrounding no longer bypasses the allowlist, and a timed-out command's children are actually killed (§4.6). Changes tool behaviour, so `v2` results are not comparable |
 | `v2` | Leading `/` is root-anchored within the sandbox (§4.6). Changes tool behaviour, so `v1` results are not comparable |
@@ -42,7 +43,7 @@ benchmark is built to remain informative in that regime:
 |---|---|
 | Distinguish a weak model from a broken harness or an impossible task | §8 validation gates |
 | Fail fast on a harness/configuration mismatch before long stages run | §9 Stage 0 |
-| Still discriminate when binary pass rates are near zero | §7.4 progress score |
+| Still discriminate when binary pass rates are near zero | §7.3 progress score |
 | Separate "cannot read code" from "cannot drive an agent loop" | §7 two suites |
 
 ---
@@ -222,8 +223,8 @@ A **driver** turns `(task, sandbox)` into a completed run plus a metrics record.
 
 | Driver | Role |
 |---|---|
-| `native` | Purpose-built minimal loop. **The only driver used for the controlled comparison** (Stages 0–4). |
-| `pi` | pi agent, driven headlessly against the same LM Studio endpoint. Stage 5A cross-check only. |
+| `pi` | pi agent, driven headlessly against the same LM Studio endpoint. **The driver used for the controlled comparison** (Stages 2–4). |
+| `native` | Purpose-built minimal loop. Stage 0 and Stage 1, the Stage 5A cross-check, and diagnostics. |
 | `native-compact` | `native` with `history_mode="compact"` (§9 Stage 5B): only the system+user messages and the most recent assistant+tool exchange are sent each turn, never the full history. Stage 5B only, written to its own raw files, never pooled with the controlled comparison. |
 
 Rules that keep this sound:
@@ -236,8 +237,36 @@ Rules that keep this sound:
   §8, not merely asserted.
 - `pi` brings its own system prompt, tool set and message formatting. This is a deliberate
   confound, not a defect: the cross-check asks how much of the observed failure is the model
-  and how much is our bare loop. Its origin, version and system-prompt hash are recorded at
-  setup, because in Stage 5A they are the variable under test.
+  and how much is our bare loop.
+
+**Why `pi` is the controlled comparison** (decided 2026-08-31). §1's three questions are all
+comparisons *between configurations*, so the driver has to be a constant, not a minimal one —
+and §1.1 already concedes that results do not transfer across harnesses, which is a smaller
+concession when the harness is one people actually use. `native` is kept because it is the only
+driver under which §4.5's no-repair accounting is measurable, and because it exposes failure
+modes a production harness conceals: under `native`, LFM2.5 reliably navigates to the correct
+file and then fails to terminate, which `pi` papers over.
+
+**What is pinned, and what is only recorded.** `pi` is *not* frozen into a fixed configuration:
+that would yield "pi as configured in August 2026", which decays as pi improves and defeats the
+reason for choosing it. Instead:
+
+| | Treatment |
+|---|---|
+| pi's own version, resolved thinking level, context-file discovery state | **Recorded** in `environment.json`, so drift is detectable after the fact |
+| Ambient discovery — extensions, skills, prompt templates, project-local approval | **Pinned off** (`--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-approve`). This isolates the machine, not pi. `PI_CODING_AGENT_DIR` already isolates the global slot; project-local discovery resolves against the fixture copy |
+| pi's system prompt, tool set, thinking level | **Not pinned.** These are pi's identity as a harness |
+| The task's `extra_rules` (§4.3) | **Always delivered**, via `--append-system-prompt`, which appends to pi's prompt rather than replacing it. Delivering the task's stimulus is part of the task definition, not a per-driver choice |
+
+`system_prompt_sha256` is written `null` for a `pi` session: our prompt is never sent, so
+hashing it would record a prompt the model did not receive.
+
+**`pi` auto-loads the fixture `AGENTS.md`.** Its context-file discovery walks from the working
+directory upward, and the working directory is the fixture copy, so `AGENTS.md` is embedded in
+pi's system prompt on every run. This is left enabled — it is what a production harness does,
+and it makes W07 and T07's instruction conflict live rather than contingent on the model
+choosing to read the file. It does mean **W07 and T07 are not comparable across drivers**:
+under `native` the same file reaches the model only through a tool call.
 
 ### 4.2 The `native` driver
 
@@ -505,13 +534,26 @@ excluded from medians.
 mandatory:
 
 ```
-task success, progress score, step count, tool-call counts,
-invalid-call count, wall clock, peak memory, swap delta
+task success, progress score, step count, tool-call count,
+wall clock, peak memory, swap delta
 ```
 
 Per-turn TTFT and prompt tok/s are recorded if the driver exposes them and written as `null`
 otherwise. **A null is never replaced by an estimate**, and a driver's missing metrics never
 enter a comparison.
+
+Two consequences specific to `pi`:
+
+- **Tool-call counts are reconstructed**, not observed as they happen. `pi`'s calls never pass
+  through `harness/tools.py`, so `harness/driver_pi.py` recovers them from the `toolCall` and
+  `toolResult` blocks in `pi`'s own message log. Without this the progress score collapses to
+  0-or-4 on every run, which would disable §7.3's whole purpose in the near-zero regime §1.2
+  expects. Timing is not recoverable the same way: `pi`'s stream carries no inter-token
+  timings, so TTFT and generation throughput stay `null`.
+- **The invalid-call count is not measurable under `pi`** and is not in the mandatory list.
+  `pi` validates, repairs and retries internally, so a malformed call never reaches its log.
+  A recorded `0` means "none observed", not "none happened". §4.5's no-repair accounting is
+  therefore a `native`-only measurement, and one of the two reasons `native` is retained.
 
 ### 5.4 Prompt-cache handling
 
@@ -716,7 +758,9 @@ required, and never mixed into the results tables.
 
 ## §9 Execution stages and gates
 
-Stages 0–4 use the `native` driver exclusively.
+Stage 0 and Stage 1 use the `native` driver: Stage 0 checks our own tool-calling plumbing, and
+Stage 1 is raw inference with no agent loop at all. Stages 2A–4 use `pi`, the controlled
+comparison (§4.1). Stage 5A re-runs the best configurations through `native` as the cross-check.
 
 ### 9.0 Model lifecycle
 
@@ -819,9 +863,16 @@ tool-call accuracy, recovery and total execution time; report the answer either 
 
 ### Stage 5A — driver cross-check
 
-The two or three best configurations re-run through the `pi` driver at 8K, both suites.
+The two or three best configurations re-run through the **`native`** driver at 8K, both suites.
 Reported as a **separate table** answering one question: how much of the observed failure is
-the model, and how much is our bare loop.
+the model, and how much is the harness around it.
+
+The cross-check inverted when `pi` became the controlled comparison (§4.1). `native` is now the
+comparison arm, and it is the more informative direction: a configuration that succeeds under
+`pi` and collapses under `native` is telling you how much scaffolding the model needs, which is
+the practical question for anyone choosing a local model. It is also the only place §4.5's
+invalid-call accounting is measurable, and where W07/T07 test adherence without the fixture
+`AGENTS.md` being injected up front.
 
 ### Stage 5B — optimisation
 
@@ -921,14 +972,19 @@ count; both cost real wall clock. `harness/report.py`'s `suite_summary` implemen
 
 ### 10.3 Final table
 
-| Configuration | Suite W | Suite T | TTFT | Gen tok/s | Prompt tok/s | Peak RAM | Swap | Verdict |
-|---|---:|---:|---:|---:|---:|---:|---:|---|
-| LFM MLX 8-bit | | | | | | | | |
-| LFM GGUF Q8_0 | | | | | | | | |
-| LFM QAD Q4_0 | | | | | | | | |
-| LFM MLX BF16 | | | | | | | | |
-| Bonsai MLX 2-bit | | | | | | | | |
-| Bonsai GGUF Q2_0_g64 | | | | | | | | |
+| Configuration | Driver | Suite W | Suite T | TTFT | Gen tok/s | Prompt tok/s | Peak RAM | Swap | Verdict |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| LFM MLX 8-bit | | | | | | | | | |
+| LFM GGUF Q8_0 | | | | | | | | | |
+| LFM QAD Q4_0 | | | | | | | | | |
+| LFM MLX BF16 | | | | | | | | | |
+| Bonsai MLX 2-bit | | | | | | | | | |
+| Bonsai GGUF Q2_0_g64 | | | | | | | | | |
+
+**Driver is its own column, never folded into the configuration name** (§4.1): a reader must be
+able to tell at a glance which rows are comparable with which. The controlled comparison is the
+`pi` rows. Stage 5B's `native-compact` is excluded from this table entirely, being a distinct
+driver value that never enters the comparison.
 
 The Stage 5A cross-check is a separate table, never merged into this one.
 

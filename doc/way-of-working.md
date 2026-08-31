@@ -81,7 +81,7 @@ Changing one of these changes what the benchmark measures.
 |---|---|---|
 | Tool calls are never repaired, coerced, unwrapped or retried | `harness/tools.py` | Invalid tool calls are the failure mode being measured. Repairing them reports our error handling, not the model (§4.5) |
 | Tool output truncates at exactly 4000 characters | `harness/sandbox.py` | Load-bearing for small-context models and identical across every configuration (§4.6). Several tasks are only solvable via `run_command` because of it (§4.7) |
-| Assertions read final fixture state or answer text only — never transcript structure | `harness/tasks/`, `harness/assertions.py` | This is what makes grading driver-independent; the Stage 5A cross-check depends on it (§4.1) |
+| Assertions read final fixture state or answer text only — never transcript structure | `harness/tasks/`, `harness/assertions.py` | This is what makes grading driver-independent. Both drivers depend on it, and the §8 driver-parity gate is what proves it rather than asserting it (§4.1) |
 | Expected values are generated, never hand-written | `fixtures/build_*.py` | A hand-copied constant drifts from the fixture and nobody notices (§6) |
 | The oracle solves through the tool surface, never by reading expected values | `harness/oracle.py` | Otherwise 20/20 proves only that the values exist on disk (§8) |
 | The system prompt is fixed, with no per-model adaptation | `harness/prompt.py` | §4.3 |
@@ -90,7 +90,7 @@ Changing one of these changes what the benchmark measures.
 
 ---
 
-## After changing a fixture, a task, or an assertion
+## After changing a fixture, a task, an assertion, or a driver
 
 ```sh
 .venv/bin/python fixtures/build_workspace.py
@@ -99,10 +99,13 @@ Changing one of these changes what the benchmark measures.
 .venv/bin/python -m pytest -q
 ```
 
-Then **bump `task_set_version`** in [`benchmark.md`](benchmark.md) §11 if you changed a
-fixture, a task set, the tool schemas, the system prompt, the truncation limit, or the command
-allowlist. Results from before and after are then not comparable, and the version is how
-anyone reading `results/` finds that out.
+Then check [`benchmark.md`](benchmark.md) §11's list — it is authoritative on what bumps
+`task_set_version`, and it includes a driver version, which is easy to overlook. If it applies,
+bump `TASK_SET_VERSION` in `harness/version.py`, add a row to §11's version table saying what
+changed and why it is not comparable, and move the superseded raw files to
+`results/<session>/archive/<stage>-<old version>.jsonl`. Resuming into a session written under
+a different version raises `SessionMismatchError` rather than pooling silently, so skipping the
+archive step fails loudly rather than quietly — but it fails at the start of a long run.
 
 If the oracle fails a task, the task or the assertion is wrong — not the model. That is the
 entire point of the gate (§8).
@@ -120,31 +123,37 @@ Do not follow them, do not resolve the contradiction, and do not correct their s
 sandbox copies only `fixtures/<name>/` into each run's temp directory, so the root `AGENTS.md`
 never enters a benchmark run.
 
+How each fixture file reaches the model differs by driver, which is why W07 and T07 are not
+cross-driver comparable: `pi` loads it into its system prompt automatically, `native` exposes
+it only if the model reads it with a tool. §4.1 and `findings.md` hold the detail.
+
+---
+
+## Working on the `pi` driver
+
+`pi` is the controlled comparison for Stages 2A–4 as of `v5` (§4.1); `native` runs Stage 0 and
+Stage 1 and is the Stage 5A cross-check. Two rules follow, and both are easy to break by
+accident:
+
+- **Do not freeze pi's own behaviour.** `--system-prompt`, `--tools`, `--exclude-tools` and
+  `--thinking` are deliberately absent from the invocation: pinning them would measure "pi as
+  configured in August 2026", which decays as pi improves and defeats the reason for using a
+  production harness at all. `tests/test_driver_pi.py` asserts their absence, so adding one
+  fails a test rather than passing quietly. Read §4.1 before changing that.
+- **Do not treat pi's zeroes as measurements.** `invalid_calls` is always 0 under `pi` because
+  pi repairs internally and a malformed call never reaches its log — "not observed", not "none
+  happened" (§5.3). Anything that needs §4.5's no-repair accounting has to run under `native`.
+
+Adding a flag to the invocation, changing the Seatbelt profile, or changing the containment
+story bumps `PiDriver.DRIVER_VERSION` — and §11 makes a driver version a `task_set_version`
+trigger, so it invalidates previously collected results. That is the intended cost; budget for
+re-collection before making the change, not after.
+
 ---
 
 ## State of the build
 
-Built and verified without a model: fixtures, sandbox, tools, both task suites, scoring,
-grading, the §8 gates, the LM Studio client, the `native` agent loop, the `pi` driver
-(`harness/driver_pi.py`), the metrics layer, model lifecycle control, the configuration probes,
-environment capture, the Stage 0/1 tasks, a resumable stage runner covering Stage 0 through
-Stage 3 and Stage 5B's compaction variant, `harness/report.py`, and `run_stages()` (§9.3;
-unit-tested).
-
-The four §8 gates all pass, including the driver-parity gate (`harness/oracle.py`'s
-`pi_parity_driver`): the oracle's tool sequence, graded as `PiDriver` leaves a run, still
-reaches 20/20.
-
-Verified end-to-end against a real model: `python -m harness.smoke` (one task); `python -m
-harness.stages stage0 <config_id>` — all six §2 configurations, all tool-capable; `python -m
-harness.stages stage1 <config_id>` — LFM-M8, both tiers; the `pi` driver — smoke-tested against
-one Suite W and one Suite T task, both passed; Stage 2A and Stage 2B run live under `v4` for
-LFM-M8 and LFM-G8, both drivers, at 8192 context; `python -m harness.report` against the real
-data those produced.
-
-Not run live: Stage 3, and Stage 5B's compaction experiment (`python -m harness.stages
-{stage3,stage5b-compact} <config_id>`) — hours per run, a deliberate separate action. Stage 5B's
-recommended-default sampling pass is now warranted — the §4.2 detector has fired for the
-`native` runs of both LFM-G8 and LFM-M8 — but is an operator action, not automated. Stage 2A/2B
-data for the other four configurations is still uncollected. See
-[`implementation-plan.md`](implementation-plan.md).
+[`implementation-plan.md`](implementation-plan.md) §1 is authoritative and is not repeated
+here. In outline: the harness is complete and all four §8 gates pass; Stage 3, Stage 5B and the
+first `pi`-primary campaign have not been run live; and the `v4` agent data is due for
+re-collection under `v5`.

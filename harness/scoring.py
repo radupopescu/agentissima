@@ -1,4 +1,4 @@
-"""Progress score, per doc/benchmark.md §7.4.
+"""Progress score, per doc/benchmark.md §7.3.
 
 0 no valid tool call · 1 valid tool call · 2 read or searched the correct target
 · 3 final answer of the right shape · 4 passed.
@@ -9,6 +9,13 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 from .types import Ctx, RunOutcome, Task
+
+
+# Tools whose *results* can surface a target the call did not name. `native`
+# has one; `pi` names its equivalents differently (§4.1). Listing pi's names
+# here changes nothing for `native`, which never emits them, and keeps
+# progress level 2 reachable the same way under both drivers.
+SEARCH_TOOLS = frozenset({"search_files", "grep", "find"})
 
 
 def _normalise(path: str) -> str:
@@ -34,7 +41,7 @@ def touched_target(outcome: RunOutcome, targets: tuple[str, ...]) -> bool:
                     return True
 
         # A search over a wider scope counts when its results surface a target.
-        if call.name == "search_files":
+        if call.name in SEARCH_TOOLS:
             for target in wanted:
                 if target in call.result:
                     return True

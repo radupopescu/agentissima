@@ -16,6 +16,54 @@ drawn from.
 
 ---
 
+## 2026-08-31 — pi injects the fixture's `AGENTS.md` into its system prompt on every run
+
+**What happens.** pi discovers context files and embeds them in the system prompt, so they never
+appear in the message log. Read from pi 0.84.4's own source rather than inferred:
+`dist/core/resource-loader.js`'s `loadProjectContextFiles` takes the first match of
+`AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` from the agent
+directory, then walks from `cwd` upward taking one per directory;
+`dist/core/system-prompt.js` assembles base prompt → appended text → `<project_context>` →
+skills → cwd.
+
+The `pi` driver sets `cwd` to the fixture copy, whose root holds the deliberately adversarial
+`AGENTS.md`. It is therefore loaded on **every** run, for all 20 tasks.
+
+**The isolation that does hold.** The global slot reads from `PI_CODING_AGENT_DIR`, which the
+driver points at `setup/pi_config/` — a directory containing no context file. The operator's
+own `~/.claude/CLAUDE.md` is not reachable: that path is neither the agent directory nor an
+ancestor of the temp fixture tree. Only the fixture's own file is picked up.
+
+**Why it is left enabled.** Loading `AGENTS.md` is what a production harness does, and it makes
+W07 and T07's instruction conflict live rather than contingent on the model choosing to read the
+file. Under `native` the same file reaches the model only through a tool call, so a model that
+never opens it passes those tasks without ever meeting the conflict.
+
+**Consequence.** W07 and T07 are not comparable across drivers, even after the `extra_rules`
+fix. Recorded in §4.1; `environment.json` carries `context_files_discovered` for `pi` sessions.
+
+**Related defect, not a finding.** Until `PiDriver.DRIVER_VERSION` `2`, pi received the
+adversarial `AGENTS.md` but *not* the task's `extra_rules`, so those two tasks were graded
+against rules the model was never given. That is our defect, recorded in
+`implementation-plan.md`'s table, and it invalidated the `v4` pi W07/T07 records.
+
+---
+
+## 2026-08-31 — pi's `--thinking` is inert for a local LM Studio model
+
+**What happens.** `dist/core/agent-session.js` clamps the requested level through
+`getSupportedThinkingLevels`, which returns `["off"]` for any model whose catalogue entry does
+not declare `reasoning`. `setup/pi_config/models.json` declares the LM Studio provider's model
+as `{"id": "bench"}` with no such flag, so every thinking level clamps to `off`.
+
+**Why it matters.** LFM2.5 still emits `reasoning_content` under pi — its transcripts carry
+`thinking` blocks with `thinkingSignature: "reasoning_content"`. That reasoning is the model's
+own behaviour, not something pi requested. So thinking level is neither a lever we can pull nor
+a drift vector to guard against here, and §4.1 does not pin it. `environment.json` records the
+resolved value (`off`) for completeness.
+
+---
+
 ## 2026-08-30 — pi's own permission extension does not contain its `bash` tool
 
 **What happened.** While building the `pi` driver (§4.1, M7), a research spike tested whether
@@ -47,6 +95,10 @@ the time.
 
 **Residual gap, accepted rather than fixed.** The Seatbelt profile only denies *writes*. A
 `bash` command reading a path outside the working directory (`cat /etc/hosts`) still succeeds.
+Real Stage 2A data confirms this is exercised, not merely possible: in
+`results/LFM-G8-8192/transcripts/LFM-G8-W-W04-r1.json` the model ran
+`find / -name "expense.csv" -type f` through pi's `bash` tool after a failed `read`, and the
+call ended on pi's own 30-second timeout rather than on any containment boundary.
 Denying `bash` outright would close this, but at a real cost: Suite T's T03 and T09 expect the
 agent to self-verify a fix by running the test suite, and `pi-permission-system`'s own guard
 already covers reads through pi's other tools. The read-side gap is a lower-severity exposure
@@ -85,9 +137,10 @@ Specific to this harness: no query hints, no retry assistance, no other agent fr
 prompting. §1.1 already states results do not transfer to a different harness or prompting
 style.
 
-- Evidence: `results/{BON-M2,BON-G2}-8192/raw/stage2a.jsonl` and the matching transcripts,
-  particularly W01/W04/W08 (single failed attempt) and BON-G2's W07 (8 tool calls, hallucinated
-  tool, fabricated answer).
+- Evidence: `results/{BON-M2,BON-G2}-8192/archive/stage2a-v3.jsonl` and the matching
+  transcripts, particularly W01/W04/W08 (single failed attempt) and BON-G2's W07 (8 tool calls,
+  hallucinated tool, fabricated answer). Collected under `v3`; archived when `v4` superseded it,
+  and not yet re-collected for either of these configurations.
 
 ---
 
@@ -112,8 +165,9 @@ this session: the harness already handles it correctly (`server_error`, §4.8) �
 occurrence and moved on rather than losing the run or the stage. The cost is three lost
 repetitions per affected task, not a crash.
 
-- Evidence: `results/{LFM-M8,LFM-G8,LFM-BF16}-8192/raw/stage2a.jsonl` and
-  `results/BON-M2-8192/raw/stage2a.jsonl`, plus the matching transcripts.
+- Evidence: `results/{LFM-M8,LFM-G8,LFM-BF16,BON-M2}-8192/archive/stage2a-v3.jsonl`, plus the
+  matching transcripts. The `v4` re-collection reproduced the same pattern for LFM-M8 and
+  LFM-G8 (`raw/stage2a.jsonl`, 3 `server_error` runs each).
 
 ---
 
@@ -139,7 +193,7 @@ one file. Zero `server_error` in the clean run. The three affected tasks now fai
 `empty_answer` instead of crashing the backend — see the next entry.
 
 - Pre-fix run (archived, excluded from reporting): `results/LFM-GQ4-8192/archive/stage2a-engine-protocol-runtime-bug.jsonl`
-- Clean re-run: `results/LFM-GQ4-8192/raw/stage2a.jsonl`
+- Clean re-run: `results/LFM-GQ4-8192/archive/stage2a-v3.jsonl`
 
 **Analysis.** The setting is machine-wide, not per-configuration. It was on for every run before
 this was found, including all six configurations' Stage 0 data. Stage 0's tasks are single tool
@@ -189,7 +243,7 @@ Since this holds across all four quantisations, it reads as a property of LFM2.5
 training, not of any one artefact — worth stating as a finding about the model, not about a
 configuration.
 
-- Evidence: `results/{LFM-GQ4,LFM-M8,LFM-G8,LFM-BF16}-8192/raw/stage2a.jsonl` (task_id
+- Evidence: `results/{LFM-GQ4,LFM-M8,LFM-G8,LFM-BF16}-8192/archive/stage2a-v3.jsonl` (task_id
   W02/W03/W09/W10) and the matching transcripts.
 
 ---
