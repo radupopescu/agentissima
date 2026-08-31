@@ -1,4 +1,4 @@
-# interview
+# agentissima
 
 A benchmark for local agent LLMs on Apple silicon, run through LM Studio. It measures agent
 task success, not token throughput alone, and answers three separable questions:
