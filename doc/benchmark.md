@@ -839,7 +839,7 @@ supports it. Nothing in Stage 5B feeds the controlled comparison.
   pass itself is an operator action once the detector fires, not automatic.
 - **The context-compaction experiment** is a runnable stage: `harness/stages.py`'s
   `run_stage5b_compact()`, using `NativeDriver(history_mode="compact")` (§4.1). Not part of
-  `run_full()`; run separately.
+  `run_stages()`'s registry (§9.3); run separately.
 
 ### 9.1 Repetition handling
 
@@ -866,16 +866,26 @@ The full unpruned matrix — 2 suites × 2 contexts × 10 tasks × 3 repetitions
 is **720 agent runs** and is not attempted. The 2A gate and 8K-before-16K staging keep this
 tractable. Each gate is an explicit go/no-go decision point, not a formality.
 
-### 9.3 Running the full sequence for one configuration
+### 9.3 Running a sequence of stages for one configuration
 
-`harness/stages.py`'s `run_full(config_id)` (`python -m harness.stages full <config_id>`)
-sequences Stage 0 → Stage 1 (8K, 16K) → Stage 2A → Stage 2B → Stage 3 for one configuration and
-stops there, on the first gate failure or a stage that doesn't complete
-(`unsupported`/`oversized`). It does not continue to Stage 4: that stage's trigger — "only
-where Stage 3 showed failures attributable to context limits" — is a judgement about failure
-*cause*, not a mechanical threshold like Stage 0/2A's gates, and automating past it would be
-exactly the formality §9.2 warns against. Stage 5A needs the `pi` driver; Stage 5B is a
-standalone experiment. Both are separate, manual steps.
+`harness/stages.py`'s `run_stages(config_id, stage_names, driver=...)`
+(`python -m harness.stages run <config_id> --stages stage0,stage1,stage2a,stage2b --driver
+native`) runs the given stages, in order, under the given driver (§4.1), stopping at the first
+gate failure or a stage that doesn't complete (`unsupported`/`oversized`) — no further stages
+attempted for that configuration/driver pair. It is a `STEPS` registry
+(`stage0`/`stage1`/`stage2a`/`stage2b`) plus that loop, not a separate function per
+stage-list/driver combination: adding a later stage to the registry is enough to run it this
+way too. Stage 0 and Stage 1 always run `native` regardless of the `driver` argument — Stage 0
+specifically tests the harness's own loop, and Stage 1 has no tool use at all, so a driver
+distinction is meaningless for either.
+
+Stage 3 and beyond are not in the registry and are run independently, once wanted: Stage 3 is a
+plain function call (`run_stage3(config_id)`) after Stage 2A has proceeded; Stage 4 is not
+automated at all, because its trigger — "only where Stage 3 showed failures attributable to
+context limits" — is a judgement about failure *cause*, not a mechanical threshold like Stage
+0/2A's gates, and chaining past it automatically would be exactly the formality §9.2 warns
+against. Stage 5A is `run_stages([...], driver="pi")` against the chosen configurations; Stage
+5B is `run_stage5b_compact()`, a standalone experiment.
 
 ---
 

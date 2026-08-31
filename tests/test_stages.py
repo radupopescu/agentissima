@@ -406,14 +406,14 @@ def test_stage1_resumes(tmp_path, monkeypatch):
     assert empty.seen == []
 
 
-# --- run_full: sequencing and gating -----------------------------------------
+# --- run_stages: sequencing and gating ---------------------------------------
 #
 # These mock at the stage-function level (run_stage0, run_stage1, ...), not
 # the client level: each of those is already independently tested above, and
-# scripting a full nine-stage-construction success path down to individual
-# tool calls would mean hand-writing hundreds of turns to test logic that
-# doesn't touch a client at all. What's novel in run_full is the sequencing
-# and gating, which this exercises directly.
+# scripting a full stage-construction success path down to individual tool
+# calls would mean hand-writing hundreds of turns to test logic that doesn't
+# touch a client at all. What's novel in run_stages is the sequencing and
+# gating, which this exercises directly.
 
 
 def _stage_outcome(status="completed", records=None):
@@ -434,7 +434,7 @@ def _stage2a_outcome(proceeds, status="completed"):
     )
 
 
-def test_run_full_stops_when_not_tool_capable(monkeypatch):
+def test_run_stages_stops_when_not_tool_capable(monkeypatch):
     monkeypatch.setattr(stages, "run_stage0", lambda *a, **k: _stage0_outcome(False))
 
     def explode(*a, **k):
@@ -442,63 +442,80 @@ def test_run_full_stops_when_not_tool_capable(monkeypatch):
 
     monkeypatch.setattr(stages, "run_stage1", explode)
 
-    outcome = stages.run_full("FAKE")
-    assert outcome.stopped_reason == "not tool-capable (Stage 0 gate)"
-    assert outcome.stage1 == {}
+    outcome = stages.run_stages("FAKE", ["stage0", "stage1", "stage2a", "stage2b"])
+    assert outcome.stopped_at == "stage0"
+    assert "stage1" not in outcome.results
 
 
-def test_run_full_stops_when_stage0_does_not_complete(monkeypatch):
+def test_run_stages_stops_when_stage0_does_not_complete(monkeypatch):
     monkeypatch.setattr(
         stages, "run_stage0", lambda *a, **k: _stage0_outcome(False, status="oversized")
     )
-    outcome = stages.run_full("FAKE")
-    assert "stage0 oversized" in outcome.stopped_reason
+    outcome = stages.run_stages("FAKE", ["stage0", "stage1"])
+    assert outcome.stopped_at == "stage0"
+    assert outcome.results["stage0"].stage.status == "oversized"
 
 
-def test_run_full_stops_when_stage2a_gate_fails(monkeypatch):
+def test_run_stages_stops_when_stage2a_gate_fails(monkeypatch):
     monkeypatch.setattr(stages, "run_stage0", lambda *a, **k: _stage0_outcome(True))
     monkeypatch.setattr(stages, "run_stage1", lambda config_id, tier, **k: _stage_outcome())
-    monkeypatch.setattr(stages, "run_stage2a", lambda *a, **k: _stage2a_outcome(False))
+    monkeypatch.setattr(
+        stages, "run_stage2a", lambda config_id, *, driver, **k: _stage2a_outcome(False)
+    )
 
     def explode(*a, **k):
         raise AssertionError("must not run Stage 2B when the 2A gate failed")
 
     monkeypatch.setattr(stages, "run_stage2b", explode)
 
-    outcome = stages.run_full("FAKE")
-    assert outcome.stopped_reason == "failed Stage 2A gate"
-    assert len(outcome.stage1) == 2
-    assert outcome.stage2b is None
+    outcome = stages.run_stages("FAKE", ["stage0", "stage1", "stage2a", "stage2b"])
+    assert outcome.stopped_at == "stage2a"
+    assert len(outcome.results["stage1"]) == 2
+    assert "stage2b" not in outcome.results
 
 
-def test_run_full_stops_when_stage2b_does_not_complete(monkeypatch):
+def test_run_stages_stops_when_stage2b_does_not_complete(monkeypatch):
     monkeypatch.setattr(stages, "run_stage0", lambda *a, **k: _stage0_outcome(True))
     monkeypatch.setattr(stages, "run_stage1", lambda config_id, tier, **k: _stage_outcome())
-    monkeypatch.setattr(stages, "run_stage2a", lambda *a, **k: _stage2a_outcome(True))
     monkeypatch.setattr(
-        stages, "run_stage2b", lambda *a, **k: _stage_outcome(status="oversized")
+        stages, "run_stage2a", lambda config_id, *, driver, **k: _stage2a_outcome(True)
+    )
+    monkeypatch.setattr(
+        stages, "run_stage2b",
+        lambda config_id, *, driver, **k: _stage_outcome(status="oversized"),
     )
 
-    def explode(*a, **k):
-        raise AssertionError("must not run Stage 3 when Stage 2B did not complete")
-
-    monkeypatch.setattr(stages, "run_stage3", explode)
-
-    outcome = stages.run_full("FAKE")
-    assert "stage2b oversized" in outcome.stopped_reason
+    outcome = stages.run_stages("FAKE", ["stage0", "stage1", "stage2a", "stage2b"])
+    assert outcome.stopped_at == "stage2b"
+    assert outcome.results["stage2b"].status == "oversized"
 
 
-def test_run_full_reaches_stage3_on_success(monkeypatch):
+def test_run_stages_completes_every_requested_stage_on_success(monkeypatch):
     monkeypatch.setattr(stages, "run_stage0", lambda *a, **k: _stage0_outcome(True))
     monkeypatch.setattr(stages, "run_stage1", lambda config_id, tier, **k: _stage_outcome())
-    monkeypatch.setattr(stages, "run_stage2a", lambda *a, **k: _stage2a_outcome(True))
-    monkeypatch.setattr(stages, "run_stage2b", lambda *a, **k: _stage_outcome())
     monkeypatch.setattr(
-        stages, "run_stage3",
-        lambda *a, **k: {"W": _stage_outcome(), "T": _stage_outcome()},
+        stages, "run_stage2a", lambda config_id, *, driver, **k: _stage2a_outcome(True)
+    )
+    monkeypatch.setattr(
+        stages, "run_stage2b", lambda config_id, *, driver, **k: _stage_outcome()
     )
 
-    outcome = stages.run_full("FAKE")
-    assert outcome.stopped_reason is None
-    assert outcome.stage3["W"].status == "completed"
-    assert outcome.stage3["T"].status == "completed"
+    outcome = stages.run_stages("FAKE", ["stage0", "stage1", "stage2a", "stage2b"])
+    assert outcome.stopped_at is None
+    assert outcome.results["stage2b"].status == "completed"
+
+
+def test_run_stages_threads_driver_through_to_stage2a_and_2b(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        stages, "run_stage2a",
+        lambda config_id, *, driver, **k: (seen.append(("2a", driver)), _stage2a_outcome(True))[1],
+    )
+    monkeypatch.setattr(
+        stages, "run_stage2b",
+        lambda config_id, *, driver, **k: (seen.append(("2b", driver)), _stage_outcome())[1],
+    )
+
+    outcome = stages.run_stages("FAKE", ["stage2a", "stage2b"], driver="pi")
+    assert outcome.driver == "pi"
+    assert seen == [("2a", "pi"), ("2b", "pi")]

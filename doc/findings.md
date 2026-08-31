@@ -16,6 +16,45 @@ drawn from.
 
 ---
 
+## 2026-08-30 — pi's own permission extension does not contain its `bash` tool
+
+**What happened.** While building the `pi` driver (§4.1, M7), a research spike tested whether
+`pi-permission-system`'s `special.external_directory: deny` rule keeps pi's tools inside a given
+working directory. It does for `read`, `write`, `edit`, `find`, `grep` and `ls`: a `read` call
+for a path outside the working directory was refused. It does not for `bash`: with
+`bash: allow`, pi ran `cat /etc/hosts` through its `bash` tool and the real file's contents came
+back — no denial, no prompt.
+
+**Mechanism.** The extension's own documentation is explicit about the boundary: the
+`external_directory` guard is implemented for path-bearing tool arguments, and `bash` commands
+take an opaque string, not a structured path, so nothing extracts a path from them to check.
+The extension does offer bash command wildcard patterns (e.g. `"rm -rf *": "deny"`), but these
+match the raw, unparsed command string — the same class of defect as this project's own
+`run_command` path-escape bug (`implementation-plan.md`, the `_escapes_sandbox` fix), just in
+someone else's tool instead of this one.
+
+**Resolution.** A hand-written macOS Seatbelt profile (`sandbox-exec`), generated per run by
+`harness/driver_pi.py` and wrapped around every `pi` invocation, denies all filesystem writes
+outside the fixture copy, the isolated pi config directory, and an isolated temp directory.
+Verified directly: a write attempted from inside pi's `bash` tool to a path outside those three
+failed with `Operation not permitted`, while writes inside the allowed paths succeeded and the
+LM Studio round-trip through the model worked normally under the sandbox. This is kernel
+enforcement, not string matching, and needed no new dependency (`sandbox-exec` is Apple's own
+tool). A third-party extension, `@erichll/pi-sandbox`, offers the same kind of OS-level
+containment as an installable package; it was considered and set aside for this round — it
+needs a second package (`pi-auto-review`) and its own verification pass, and was one day old at
+the time.
+
+**Residual gap, accepted rather than fixed.** The Seatbelt profile only denies *writes*. A
+`bash` command reading a path outside the working directory (`cat /etc/hosts`) still succeeds.
+Denying `bash` outright would close this, but at a real cost: Suite T's T03 and T09 expect the
+agent to self-verify a fix by running the test suite, and `pi-permission-system`'s own guard
+already covers reads through pi's other tools. The read-side gap is a lower-severity exposure
+than the write/destroy risk the Seatbelt profile closes, and no worse than the read access pi's
+host process already has under the account it runs as.
+
+---
+
 ## 2026-08-30 — Ternary-Bonsai-8B fails Stage 2A on a specific pattern, not on tool calling
 
 **What happened.** Both Bonsai configurations (BON-M2, BON-G2) scored 0/10 on Suite W in Stage

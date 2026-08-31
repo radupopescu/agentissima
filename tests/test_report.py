@@ -56,9 +56,9 @@ def test_passed_none_records_are_left_alone():
 
 def test_suite_summary_counts_passes_and_computes_rate():
     records = [
-        {"config_id": "C", "suite": "W", "passed": True, "wall_clock_s": 60.0},
-        {"config_id": "C", "suite": "W", "passed": False, "wall_clock_s": 60.0},
-        {"config_id": "C", "suite": "T", "passed": True, "wall_clock_s": 999.0},
+        {"config_id": "C", "suite": "W", "driver": "native", "passed": True, "wall_clock_s": 60.0},
+        {"config_id": "C", "suite": "W", "driver": "native", "passed": False, "wall_clock_s": 60.0},
+        {"config_id": "C", "suite": "T", "driver": "native", "passed": True, "wall_clock_s": 999.0},
     ]
     summary = report.suite_summary(records, "C", "W")
     assert summary.total_runs == 2
@@ -69,10 +69,12 @@ def test_suite_summary_counts_passes_and_computes_rate():
 
 def test_suite_summary_a_slow_failure_scores_no_better_than_a_fast_one():
     fast_fail = report.suite_summary(
-        [{"config_id": "C", "suite": "W", "passed": False, "wall_clock_s": 10.0}], "C", "W"
+        [{"config_id": "C", "suite": "W", "driver": "native", "passed": False, "wall_clock_s": 10.0}],
+        "C", "W",
     )
     slow_fail = report.suite_summary(
-        [{"config_id": "C", "suite": "W", "passed": False, "wall_clock_s": 500.0}], "C", "W"
+        [{"config_id": "C", "suite": "W", "driver": "native", "passed": False, "wall_clock_s": 500.0}],
+        "C", "W",
     )
     assert fast_fail.successful_tasks_per_hour == 0.0
     assert slow_fail.successful_tasks_per_hour == 0.0
@@ -82,6 +84,18 @@ def test_suite_summary_with_no_runs_is_zero_not_an_error():
     summary = report.suite_summary([], "C", "W")
     assert summary.total_runs == 0
     assert summary.successful_tasks_per_hour == 0.0
+
+
+def test_suite_summary_never_pools_a_different_driver():
+    """§4.1: records from different drivers are never pooled."""
+    records = [
+        {"config_id": "C", "suite": "W", "driver": "native", "passed": True, "wall_clock_s": 60.0},
+        {"config_id": "C", "suite": "W", "driver": "pi", "passed": True, "wall_clock_s": 60.0},
+    ]
+    native = report.suite_summary(records, "C", "W", driver="native")
+    pi = report.suite_summary(records, "C", "W", driver="pi")
+    assert native.total_runs == 1
+    assert pi.total_runs == 1
 
 
 # --- §4.2: degenerate-rate detector -----------------------------------------
@@ -145,10 +159,10 @@ def _stage0_records(config_id: str, valid_count: int, total: int = 9) -> list[di
     ]
 
 
-def _stage2a_records(config_id: str, passed: bool, progress: int) -> list[dict]:
+def _stage2a_records(config_id: str, passed: bool, progress: int, driver: str = "native") -> list[dict]:
     return [
         {
-            "config_id": config_id, "suite": "W", "task_id": f"W{i:02d}",
+            "config_id": config_id, "suite": "W", "task_id": f"W{i:02d}", "driver": driver,
             "context_length": 8192, "passed": passed, "progress_score": progress,
         }
         for i in range(1, 10)
@@ -184,15 +198,15 @@ def test_verdict_passed_stage2a_gate_with_no_stage2b_data():
 def test_verdict_proceeded_to_stage2b():
     records = _stage0_records("C", valid_count=9)
     records += _stage2a_records("C", passed=True, progress=4)
-    records.append({"config_id": "C", "context_length": 8192, "suite": "T"})
+    records.append({"config_id": "C", "context_length": 8192, "suite": "T", "driver": "native"})
     assert report._verdict("C", records) == "proceeded to Stage 2B"
 
 
 def test_verdict_proceeded_to_stage3():
     records = _stage0_records("C", valid_count=9)
     records += _stage2a_records("C", passed=True, progress=4)
-    records.append({"config_id": "C", "context_length": 8192, "suite": "T"})
-    records.append({"config_id": "C", "context_length": 16384, "suite": "W"})
+    records.append({"config_id": "C", "context_length": 8192, "suite": "T", "driver": "native"})
+    records.append({"config_id": "C", "context_length": 16384, "suite": "W", "driver": "native"})
     assert report._verdict("C", records) == "proceeded to Stage 3"
 
 
@@ -203,6 +217,15 @@ def test_verdict_stage1_16k_records_are_not_mistaken_for_stage3():
     config that merely had Stage 1 16K data, with no Stage 2B/3 ever run."""
     records = _stage0_records("C", valid_count=9)
     records += _stage2a_records("C", passed=True, progress=4)
-    records.append({"config_id": "C", "context_length": 8192, "suite": "T"})
-    records.append({"config_id": "C", "context_length": 16384, "suite": "1"})
+    records.append({"config_id": "C", "context_length": 8192, "suite": "T", "driver": "native"})
+    records.append({"config_id": "C", "context_length": 16384, "suite": "1", "driver": "native"})
     assert report._verdict("C", records) == "proceeded to Stage 2B"
+
+
+def test_verdict_scoped_to_driver_pi_data_does_not_leak_into_native_verdict():
+    """§4.1: pi's Stage 2A/2B records must not make a native verdict look
+    more advanced than it is, and vice versa."""
+    records = _stage0_records("C", valid_count=9)
+    records += _stage2a_records("C", passed=True, progress=4, driver="pi")
+    assert report._verdict("C", records, driver="native") == "passed Stage 0 only"
+    assert report._verdict("C", records, driver="pi") == "passed Stage 2A gate"

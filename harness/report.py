@@ -17,6 +17,17 @@ report it was meant to be excluded from, doubling the run count.
 Not built here: §10.4's "reporting the three questions" is conclusions
 written by a person once real multi-configuration data exists — this module
 produces the tables that conclusion is drawn from, not the conclusion.
+
+§4.1: "records from different drivers are never pooled, averaged, or
+compared cell-by-cell as though equivalent." Every summary below that reads
+agent-stage records (Suite W/T) is scoped to one `driver` at a time —
+`suite_summary`, `_verdict`, `degenerate_rate`, `server_error_rate`. This
+also keeps Stage 5B's `native-compact` experiment (§9 Stage 5B) out of the
+main comparison automatically: it is a distinct `driver` value that
+`_drivers_present` never selects, so it stays excluded from every one of
+these tables without needing its own filter. Stage 0/1 are the one
+exception — they always run `native` regardless of which driver a verdict
+describes (§4.1), so `_verdict` reads them unscoped by driver.
 """
 
 from __future__ import annotations
@@ -61,6 +72,21 @@ def load_stage_records(stage_name: str, results_dir: Path = RESULTS_DIR) -> list
     for raw_path in sorted(Path(results_dir).glob(f"*/raw/{stage_name}.jsonl")):
         records.extend(read_records(raw_path))
     return records
+
+
+# Drivers reported in the controlled comparison (§4.1). Stage 5B's
+# "native-compact" is deliberately not one of these -- see the module
+# docstring.
+COMPARISON_DRIVERS = ("native", "pi")
+
+
+def _drivers_present(all_records: list[dict], config_id: str) -> list[str]:
+    """Which comparison drivers actually have any record for `config_id`,
+    in `COMPARISON_DRIVERS` order -- so a driver never run against this
+    configuration (typically `pi`, before it has been) gets no row at all,
+    rather than a row of all-dashes."""
+    seen = {r["driver"] for r in all_records if r["config_id"] == config_id}
+    return [driver for driver in COMPARISON_DRIVERS if driver in seen]
 
 
 # --- §9.1: flaky ---------------------------------------------------------
@@ -132,24 +158,31 @@ def server_error_rate(records: list[dict]) -> float:
 class SuiteSummary:
     config_id: str
     suite: str
+    driver: str
     total_runs: int
     passed_runs: int
     total_wall_clock_s: float
     successful_tasks_per_hour: float
 
 
-def suite_summary(records: list[dict], config_id: str, suite: str) -> SuiteSummary:
+def suite_summary(
+    records: list[dict], config_id: str, suite: str, *, driver: str = "native"
+) -> SuiteSummary:
     """§10.2's headline metric: successful tasks per hour of wall clock. The
     denominator is every run in the suite's stage, not only the passing
     ones — a configuration that fails fast should not be penalised relative
-    to one that fails slowly by the same count; both cost real wall clock."""
-    scoped = [r for r in records if r["config_id"] == config_id and r["suite"] == suite]
+    to one that fails slowly by the same count; both cost real wall clock.
+    Scoped to one `driver` (§4.1) — never pooled across drivers."""
+    scoped = [
+        r for r in records
+        if r["config_id"] == config_id and r["suite"] == suite and r["driver"] == driver
+    ]
     total_runs = len(scoped)
     passed_runs = sum(1 for r in scoped if r["passed"])
     total_wall_clock_s = sum(r["wall_clock_s"] or 0.0 for r in scoped)
     hours = total_wall_clock_s / 3600
     rate = passed_runs / hours if hours > 0 else 0.0
-    return SuiteSummary(config_id, suite, total_runs, passed_runs, total_wall_clock_s, rate)
+    return SuiteSummary(config_id, suite, driver, total_runs, passed_runs, total_wall_clock_s, rate)
 
 
 # --- §10.3: throughput (Stage 1 only, per §5.4) ---------------------------
@@ -204,16 +237,21 @@ def throughput_summary(
 @dataclass
 class FinalRow:
     config_id: str
+    driver: str
     verdict: str
     suite_w: SuiteSummary
     suite_t: SuiteSummary
     throughput: ThroughputSummary
 
 
-def _verdict(config_id: str, all_records: list[dict]) -> str:
+def _verdict(config_id: str, all_records: list[dict], *, driver: str = "native") -> str:
     """A mechanical stage-progression status, not the qualitative judgement
     `benchmark.md`'s prose implies — that's §10.4's job, written by a person
-    once real data exists across configurations."""
+    once real data exists across configurations.
+
+    Stage 0 is read unscoped by `driver`: it always runs `native` (§4.1), so
+    a `pi` verdict still needs it to know whether this configuration is
+    tool-capable at all. Stage 2A/2B/3 are scoped to `driver`."""
     stage0_records = [r for r in all_records if r["config_id"] == config_id and r["suite"] == "0"]
     if not stage0_records:
         return "not run"
@@ -222,7 +260,7 @@ def _verdict(config_id: str, all_records: list[dict]) -> str:
 
     stage2a_records = [
         r for r in all_records if r["config_id"] == config_id and r["suite"] == "W"
-        and r["context_length"] == 8192
+        and r["context_length"] == 8192 and r["driver"] == driver
     ]
     if not stage2a_records:
         return "passed Stage 0 only"
@@ -231,7 +269,7 @@ def _verdict(config_id: str, all_records: list[dict]) -> str:
 
     stage2b_records = [
         r for r in all_records if r["config_id"] == config_id and r["suite"] == "T"
-        and r["context_length"] == 8192
+        and r["context_length"] == 8192 and r["driver"] == driver
     ]
     if not stage2b_records:
         return "passed Stage 2A gate"
@@ -240,7 +278,7 @@ def _verdict(config_id: str, all_records: list[dict]) -> str:
     # context_length == 16384 under suite "1" and are not Stage 3 evidence.
     stage3_records = [
         r for r in all_records if r["config_id"] == config_id
-        and r["suite"] in ("W", "T") and r["context_length"] == 16384
+        and r["suite"] in ("W", "T") and r["context_length"] == 16384 and r["driver"] == driver
     ]
     if stage3_records:
         return "proceeded to Stage 3"
@@ -253,15 +291,19 @@ def final_table(config_ids: list[str], results_dir: Path = RESULTS_DIR) -> list[
 
     rows = []
     for config_id in config_ids:
-        rows.append(
-            FinalRow(
-                config_id=config_id,
-                verdict=_verdict(config_id, all_records),
-                suite_w=suite_summary(all_records, config_id, "W"),
-                suite_t=suite_summary(all_records, config_id, "T"),
-                throughput=throughput_summary(stage1_records, config_id),
+        drivers = _drivers_present(all_records, config_id) or ["native"]
+        for driver in drivers:
+            rows.append(
+                FinalRow(
+                    config_id=config_id,
+                    driver=driver,
+                    verdict=_verdict(config_id, all_records, driver=driver),
+                    suite_w=suite_summary(all_records, config_id, "W", driver=driver),
+                    suite_t=suite_summary(all_records, config_id, "T", driver=driver),
+                    # Stage 1 is always native (§4.1) — not driver-scoped.
+                    throughput=throughput_summary(stage1_records, config_id),
+                )
             )
-        )
     return rows
 
 
@@ -272,10 +314,13 @@ def _fmt(value, spec: str = "") -> str:
 
 
 def render_markdown(rows: list[FinalRow]) -> str:
+    # Driver is its own column, never folded into Configuration (§4.1) — a
+    # reader must be able to tell at a glance which rows are and are not
+    # comparable to each other.
     header = (
-        "| Configuration | Suite W | Suite T | TTFT | Gen tok/s | Prompt tok/s "
+        "| Configuration | Driver | Suite W | Suite T | TTFT | Gen tok/s | Prompt tok/s "
         "| Peak RAM | Swap | Verdict |\n"
-        "|---|---:|---:|---:|---:|---:|---:|---|---|\n"
+        "|---|---|---:|---:|---:|---:|---:|---:|---|---|\n"
     )
     lines = [header]
     for row in rows:
@@ -285,7 +330,7 @@ def render_markdown(rows: list[FinalRow]) -> str:
         peak = f"{tp.peak_memory_bytes / 1024**3:.2f} GiB" if tp.peak_memory_bytes else "-"
         swap = "yes" if tp.any_swap else "no"
         lines.append(
-            f"| {row.config_id} | {w} | {t} | {_fmt(tp.ttft_median_s, '.3f')} "
+            f"| {row.config_id} | {row.driver} | {w} | {t} | {_fmt(tp.ttft_median_s, '.3f')} "
             f"| {_fmt(tp.gen_tps_median, '.1f')} | {_fmt(tp.prompt_tps_median, '.1f')} "
             f"| {peak} | {swap} | {row.verdict} |\n"
         )
@@ -311,21 +356,23 @@ def main(argv: list[str] | None = None) -> int:
 
     all_records = load_all_records(args.results_dir)
     for config_id in config_ids:
-        agent_records = [
-            r for r in all_records if r["config_id"] == config_id and r["suite"] != "1"
-        ]
-        if not agent_records:
-            continue
-        if is_degenerate_triggered(agent_records):
-            rate = degenerate_rate(agent_records)
-            print(
-                f"{config_id}: degenerate rate {rate:.0%} exceeds the §4.2 threshold "
-                f"({DEGENERATE_THRESHOLD:.0%}) — Stage 5B's recommended-default "
-                "sampling pass is warranted"
-            )
-        error_rate = server_error_rate(agent_records)
-        if error_rate > 0:
-            print(f"{config_id}: {error_rate:.0%} of agent runs ended in server_error")
+        for driver in _drivers_present(all_records, config_id):
+            agent_records = [
+                r for r in all_records if r["config_id"] == config_id
+                and r["suite"] != "1" and r["driver"] == driver
+            ]
+            if not agent_records:
+                continue
+            if is_degenerate_triggered(agent_records):
+                rate = degenerate_rate(agent_records)
+                print(
+                    f"{config_id} ({driver}): degenerate rate {rate:.0%} exceeds the §4.2 "
+                    f"threshold ({DEGENERATE_THRESHOLD:.0%}) — Stage 5B's recommended-default "
+                    "sampling pass is warranted"
+                )
+            error_rate = server_error_rate(agent_records)
+            if error_rate > 0:
+                print(f"{config_id} ({driver}): {error_rate:.0%} of agent runs ended in server_error")
 
     if args.out:
         args.out.write_text(table, encoding="utf-8")

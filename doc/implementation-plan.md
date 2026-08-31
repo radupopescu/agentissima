@@ -27,9 +27,10 @@ this file.
 | Model lifecycle | `harness/lmstudio.py` | `lms` load/unload/ps, stage-scoped context manager |
 | Configuration probes | `setup/probe_config.py`, `setup/probe_process.py` | All six `configs/*.yaml` resolved; 31 tests |
 | Environment capture | `harness/environment.py`, `harness/admissibility.py` | §3.1 preconditions verified live; 20 tests |
-| Stage 0/1 + resumable stage runner + Stage 2A gate + `run_full` | `harness/tasks/smoke.py`, `harness/results.py`, `harness/stages.py` | Stage 0 (all six configs) and Stage 1 (LFM-M8) verified live; Stage 2A/2B/3/`run_full` unit-tested only; 44 tests |
+| Stage 0/1/2A/2B + resumable stage runner + Stage 2A gate + `run_stages` | `harness/tasks/smoke.py`, `harness/results.py`, `harness/stages.py` | Stage 0/1 (all six configs) and Stage 2A (several configs) verified live under `v3`, archived pending re-collection under `v4`; Stage 2B/3 unit-tested only |
 | Stage 1 corpus | `fixtures/build_prompts.py` | Verified live via Stage 1; 6 tests |
-| Reporting | `harness/report.py` | Verified live against real Stage 0/1 data; 17 tests |
+| Reporting | `harness/report.py`, now driver-aware (§4.1) | Verified live against real Stage 0/1 data; 19 tests |
+| `pi` driver | `harness/driver_pi.py`, `setup/pi_config/` | Smoke-tested live: one Suite W and one Suite T task, both passed. Real write containment via a per-run macOS Seatbelt profile — verified directly, see `findings.md` |
 | Stage 5B compaction | `NativeDriver.history_mode`, `harness/stages.py`'s `run_stage5b_compact` | Unit-tested only, not run live |
 
 The harness half runs with no model and no network (162 tests):
@@ -61,10 +62,12 @@ Seven defects that only a real model exposed, now fixed and covered by tests:
 
 ### Not built
 
-The `pi` driver (M7), and Stage 5B's recommended-default sampling pass (conditional — its
-detector is built, but nothing has triggered it yet). Stage 2A/2B/3 and the compaction variant
-of Stage 5B are built and unit-tested but not yet run live — each is hours long against a real
-model, and `run_full()` chains all of Stage 0-3 in one command once that's wanted.
+Stage 5B's recommended-default sampling pass (conditional — its detector is built, but nothing
+has triggered it yet), and a formal `pi` driver parity gate (§8) — the smoke test above is not
+that. Stage 2B/3 and the compaction variant of Stage 5B are built and unit-tested but not yet
+run live — each is hours long against a real model, and `run_stages(config_id, stage_names,
+driver=...)` runs any ordered subset of Stage 0/1/2A/2B, under either driver, in one command
+once that's wanted (§9.3).
 
 ---
 

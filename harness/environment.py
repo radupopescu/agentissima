@@ -26,7 +26,8 @@ import yaml
 from . import lmstudio
 from .admissibility import UNSUPPORTED, classify_declared
 from .client import DEFAULT_EXTRA_BODY, DEFAULT_SAMPLING
-from .driver_native import DRIVER_VERSION
+from .driver_native import DRIVER_VERSION as NATIVE_DRIVER_VERSION
+from .driver_pi import DRIVER_VERSION as PI_DRIVER_VERSION
 from .metrics import swap_used_bytes
 from .prompt import prompt_sha256
 from .version import TASK_SET_VERSION
@@ -35,6 +36,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIGS_DIR = REPO_ROOT / "configs"
 FIXTURES_DIR = REPO_ROOT / "fixtures"
 SERVER_ENDPOINT = "http://localhost:1234/v1/models"
+
+# "native-compact" (Stage 5B) is still NativeDriver underneath, just with a
+# different history_mode -- same driver version.
+_DRIVER_VERSIONS = {
+    "native": NATIVE_DRIVER_VERSION,
+    "native-compact": NATIVE_DRIVER_VERSION,
+    "pi": PI_DRIVER_VERSION,
+}
 
 
 class PreconditionError(RuntimeError):
@@ -344,7 +353,7 @@ def capture(
         "sampling": {**DEFAULT_SAMPLING, **DEFAULT_EXTRA_BODY},
         "harness_git_sha": harness_git_sha(),
         "driver": driver,
-        "driver_version": DRIVER_VERSION if driver == "native" else None,
+        "driver_version": _DRIVER_VERSIONS.get(driver),
         "system_prompt_sha256": prompt_sha256(extra_rules),
         "fixture_git_sha": fixture_fingerprint(),
         "task_set_version": TASK_SET_VERSION,

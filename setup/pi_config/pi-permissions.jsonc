@@ -1,0 +1,25 @@
+// Isolated policy for the benchmark's pi driver (harness/driver_pi.py).
+// Not the user's personal ~/.pi/agent config -- PI_CODING_AGENT_DIR points
+// here for every pi invocation the harness makes.
+//
+// tools/bash: allow -- an unattended agent needs its core tools and a shell
+// (Suite T's T03/T09 expect it to self-verify with pytest) without prompts,
+// since there is no human to answer an "ask".
+//
+// special.external_directory: deny -- blocks read/write/edit/find/grep/ls
+// from touching anything outside the working directory. This does NOT cover
+// bash (see doc/findings.md): real containment for bash comes from the
+// per-run macOS Seatbelt profile driver_pi.py wraps every invocation in, not
+// from this file.
+{
+  "defaultPolicy": {
+    "tools": "allow",
+    "bash": "allow",
+    "mcp": "deny",
+    "skills": "deny",
+    "special": "deny"
+  },
+  "special": {
+    "external_directory": "deny"
+  }
+}

@@ -24,15 +24,24 @@ been given (§9 Stage 4's "larger context is not assumed to be better" cuts
 both ways: a task also should not be penalised for a context it wasn't run
 at).
 
-`run_full()` sequences Stage 0 through Stage 3 for one configuration and
-stops there. Stage 4 is deliberately not automated: its trigger ("only where
-Stage 3 showed failures attributable to context limits") is a judgement
-about failure *cause*, not a mechanical threshold like Stage 0/2A's gates,
-and §9.2 calls each gate "an explicit go/no-go decision point, not a
-formality" — automating past Stage 3 would be exactly that. Stage 5A needs
-the `pi` driver (not built). Stage 5B is a separate, standalone experiment
-(`run_stage5b_compact()`) that never feeds the controlled comparison, so it
-is not part of `run_full()` either.
+`run_stages(config_id, stage_names, driver=...)` is the one general sequencer:
+it runs `stage_names` in order under either driver (§4.1), stopping at the
+first stage that doesn't complete or fails its gate — no further stages
+attempted for that `(config, driver)` pair. It's a `STEPS` registry
+(`stage0`/`stage1`/`stage2a`/`stage2b`) plus that loop, not several
+near-duplicate functions for different stage/driver combinations; adding a
+later stage is a registry entry, not a new function. Stage 0/1 always run
+`native` regardless of `driver` — Stage 0 specifically tests *our* loop, and
+Stage 1 has no tool use at all, so a driver distinction is meaningless there.
+
+Stage 3 and beyond are deliberately outside `run_stages()` and called
+independently. Stage 4's trigger ("only where Stage 3 showed failures
+attributable to context limits") is a judgement about failure *cause*, not a
+mechanical threshold like Stage 0/2A's gates, and §9.2 calls each gate "an
+explicit go/no-go decision point, not a formality" — chaining past Stage 3
+automatically would be exactly that. Stage 5B is a separate, standalone
+experiment (`run_stage5b_compact()`) that never feeds the controlled
+comparison, so it isn't part of the registry either.
 """
 
 from __future__ import annotations
@@ -41,17 +50,19 @@ import argparse
 import json
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import environment, lmstudio, results
 from .admissibility import UNSUPPORTED, classify_declared
 from .client import LMStudioClient
 from .driver_native import NativeDriver
+from .driver_pi import PiDriver
 from .metrics import MemorySampler, SwapWindow, find_inference_pid, nonce_prefix, turn_metrics
-from .runner import run_task
+from .runner import Driver, run_task
 from .tasks import SUITE_T, SUITE_W
 from .tasks.smoke import STAGE0_TASKS
 from .types import Task
@@ -138,14 +149,15 @@ class Stage2AOutcome:
 
 
 @dataclass
-class FullRunOutcome:
+class StagesRunOutcome:
+    """The result of one `run_stages()` call: every stage attempted, in
+    order, plus which one (if any) stopped the sequence."""
+
     config_id: str
-    stopped_reason: str | None = None
-    stage0: Stage0Outcome | None = None
-    stage1: dict[str, StageOutcome] = field(default_factory=dict)
-    stage2a: Stage2AOutcome | None = None
-    stage2b: StageOutcome | None = None
-    stage3: dict[str, StageOutcome] = field(default_factory=dict)
+    driver: str
+    stage_names: list[str]
+    results: dict[str, Any] = field(default_factory=dict)
+    stopped_at: str | None = None
 
 
 def _check_task_set_version_matches(raw_path: Path) -> None:
@@ -194,6 +206,7 @@ def _model_session(
     results_dir: Path,
     configs_dir: Path | None,
     verify_hash: bool,
+    driver: str = "native",
 ) -> Iterator[ModelSession]:
     """Load `config_id` once, capture the environment, and yield everything a
     stage loop needs. Raises `UnsupportedContextError` before any load is
@@ -223,7 +236,7 @@ def _model_session(
         env = environment.capture(
             config_id,
             context_length,
-            driver="native",
+            driver=driver,
             out_dir=results_dir,
             configs_dir=configs_dir,
             verify_hash=verify_hash,
@@ -322,6 +335,25 @@ def _record_for(
     }
 
 
+def _driver_factory(
+    driver: str, *, history_mode: str = "full"
+) -> Callable[[ModelSession], Driver]:
+    """The one place that branches on driver name. Stage 0/1 never call this
+    (native-only, per §4.1 -- Stage 0 specifically tests *our* loop, Stage 1
+    has no tool use at all); Stage 2A/2B/3 use it to build whichever driver
+    `run_stage()` should run this session under.
+
+    `history_mode` only means anything for `native` (Stage 5B's compaction
+    experiment); `pi` manages its own history and ignores it."""
+    if driver == "native":
+        return lambda session: NativeDriver(
+            client=session.client, overhead_s=session.overhead, history_mode=history_mode
+        )
+    if driver == "pi":
+        return lambda session: PiDriver(model=STAGE_IDENTIFIER)
+    raise ValueError(f"unknown driver: {driver!r}")
+
+
 def run_stage(
     config_id: str,
     tasks: list[Task],
@@ -335,18 +367,26 @@ def run_stage(
     verify_hash: bool = True,
     history_mode: str = "full",
     driver_label: str = "native",
+    driver_factory: Callable[[ModelSession], Driver] | None = None,
 ) -> StageOutcome:
     """Run `tasks` × `repetitions` against `config_id` at `context_length`,
     loading the model once (§9.0) and writing §10.1 records as they complete.
+
+    `driver_factory` builds the driver from the loaded `ModelSession`;
+    defaults to `native` so every existing call site is unchanged. Records
+    from different drivers are never pooled (§4.1) -- callers running under
+    `pi` must also give a driver-specific `stage_name`, so records land in
+    their own raw file (the same pattern Stage 5B already uses for its
+    compaction experiment).
     """
     try:
         with _model_session(
             config_id, stage_name, context_length,
             results_dir=results_dir, configs_dir=configs_dir, verify_hash=verify_hash,
+            driver=driver_label,
         ) as session:
-            driver = NativeDriver(
-                client=session.client, overhead_s=session.overhead, history_mode=history_mode
-            )
+            make_driver = driver_factory or _driver_factory("native", history_mode=history_mode)
+            driver = make_driver(session)
 
             skipped_min_context = [
                 task.id for task in tasks if task.min_context > context_length
@@ -473,18 +513,21 @@ def run_stage2a(
     config_id: str,
     context_length: int = 8192,
     *,
+    driver: str = "native",
     results_dir: Path = RESULTS_DIR,
     configs_dir: Path | None = None,
 ) -> Stage2AOutcome:
     stage = run_stage(
         config_id,
         SUITE_W,
-        stage_name="stage2a",
+        stage_name="stage2a" if driver == "native" else f"stage2a-{driver}",
         suite="W",
         context_length=context_length,
         repetitions=AGENT_REPETITIONS,
         results_dir=results_dir,
         configs_dir=configs_dir,
+        driver_label=driver,
+        driver_factory=_driver_factory(driver),
     )
     return _evaluate_stage2a(stage)
 
@@ -493,21 +536,24 @@ def run_stage2b(
     config_id: str,
     context_length: int = 8192,
     *,
+    driver: str = "native",
     results_dir: Path = RESULTS_DIR,
     configs_dir: Path | None = None,
 ) -> StageOutcome:
     """Survivors of the Stage 2A gate only (§9 Stage 2B) — this function
-    doesn't check that itself; `run_full()` only calls it once Stage 2A has
-    proceeded."""
+    doesn't check that itself; `run_stages()` (§5) only calls it once Stage
+    2A has proceeded under the same driver."""
     return run_stage(
         config_id,
         SUITE_T,
-        stage_name="stage2b",
+        stage_name="stage2b" if driver == "native" else f"stage2b-{driver}",
         suite="T",
         context_length=context_length,
         repetitions=AGENT_REPETITIONS,
         results_dir=results_dir,
         configs_dir=configs_dir,
+        driver_label=driver,
+        driver_factory=_driver_factory(driver),
     )
 
 
@@ -518,7 +564,8 @@ def run_stage3(
     configs_dir: Path | None = None,
 ) -> dict[str, StageOutcome]:
     """Both suites at 16K (§9 Stage 3), for configurations already above the
-    floor at 8K — `run_full()` only reaches this after the Stage 2A gate."""
+    floor at 8K. Not part of `run_stages()` (see the module docstring) —
+    called independently once Stage 2A has proceeded."""
     outcomes = {}
     for suite_name, tasks in (("W", SUITE_W), ("T", SUITE_T)):
         outcomes[suite_name] = run_stage(
@@ -680,51 +727,116 @@ def run_stage5b_compact(
     return outcomes
 
 
-def run_full(
+def _step_stage0(
+    config_id: str, driver: str, results_dir: Path, configs_dir: Path | None
+) -> Stage0Outcome:
+    return run_stage0(config_id, results_dir=results_dir, configs_dir=configs_dir)
+
+
+def _step_stage1(
+    config_id: str, driver: str, results_dir: Path, configs_dir: Path | None
+) -> dict[str, StageOutcome]:
+    return {
+        tier: run_stage1(config_id, tier, results_dir=results_dir, configs_dir=configs_dir)
+        for tier in STAGE1_CONTEXT
+    }
+
+
+def _step_stage2a(
+    config_id: str, driver: str, results_dir: Path, configs_dir: Path | None
+) -> Stage2AOutcome:
+    return run_stage2a(
+        config_id, driver=driver, results_dir=results_dir, configs_dir=configs_dir
+    )
+
+
+def _step_stage2b(
+    config_id: str, driver: str, results_dir: Path, configs_dir: Path | None
+) -> StageOutcome:
+    return run_stage2b(
+        config_id, driver=driver, results_dir=results_dir, configs_dir=configs_dir
+    )
+
+
+@dataclass
+class StageStep:
+    name: str
+    run: Callable[[str, str, Path, Path | None], Any]
+    # outcome -> whether the sequence should attempt the next stage.
+    proceeds: Callable[[Any], bool]
+
+
+# Stage 0/1 ignore `driver` (always native, per the module docstring); Stage
+# 2A/2B honour it. Adding a later stage (Stage 3, say) is a new entry here,
+# not a new function alongside `run_stages()`.
+STEPS: dict[str, StageStep] = {
+    "stage0": StageStep(
+        "stage0", _step_stage0,
+        lambda o: o.stage.status == "completed" and o.tool_capable,
+    ),
+    "stage1": StageStep(
+        "stage1", _step_stage1,
+        lambda o: True,  # a separate measurement, not a gate -- never blocks
+    ),
+    "stage2a": StageStep(
+        "stage2a", _step_stage2a,
+        lambda o: o.stage.status == "completed" and o.proceeds,
+    ),
+    "stage2b": StageStep(
+        "stage2b", _step_stage2b,
+        lambda o: o.status == "completed",
+    ),
+}
+
+
+def run_stages(
     config_id: str,
+    stage_names: list[str],
     *,
+    driver: str = "native",
     results_dir: Path = RESULTS_DIR,
     configs_dir: Path | None = None,
-) -> FullRunOutcome:
-    """Stage 0 through Stage 3 for one configuration, stopping at the first
-    gate failure or stage that didn't complete. See the module docstring for
-    why this doesn't continue to Stage 4/5A/5B."""
-    outcome = FullRunOutcome(config_id=config_id)
+) -> StagesRunOutcome:
+    """Run `stage_names` in order for `config_id` under `driver`, stopping at
+    the first stage that doesn't complete or fails its gate (§9.2: "an
+    explicit go/no-go decision point, not a formality") — no further stages
+    attempted for this `(config_id, driver)` pair. See the module docstring
+    for the `STEPS` registry this walks and why Stage 0/1 stay native
+    regardless of `driver`.
+    """
+    results_by_stage: dict[str, Any] = {}
+    stopped_at = None
+    for name in stage_names:
+        step = STEPS[name]
+        result = step.run(config_id, driver, results_dir, configs_dir)
+        results_by_stage[name] = result
+        if not step.proceeds(result):
+            stopped_at = name
+            break
+    return StagesRunOutcome(
+        config_id=config_id,
+        driver=driver,
+        stage_names=stage_names,
+        results=results_by_stage,
+        stopped_at=stopped_at,
+    )
 
-    stage0 = run_stage0(config_id, results_dir=results_dir, configs_dir=configs_dir)
-    outcome.stage0 = stage0
-    if stage0.stage.status != "completed":
-        outcome.stopped_reason = f"stage0 {stage0.stage.status}: {stage0.stage.detail}"
-        return outcome
-    if not stage0.tool_capable:
-        outcome.stopped_reason = "not tool-capable (Stage 0 gate)"
-        return outcome
 
-    for tier in STAGE1_CONTEXT:
-        # Stage 1 is a separate measurement from the agent stages; a failure
-        # here (e.g. unsupported at 16K) is recorded but does not stop the
-        # sequence.
-        outcome.stage1[tier] = run_stage1(
-            config_id, tier, results_dir=results_dir, configs_dir=configs_dir
+def _describe_step_result(name: str, result: Any) -> str:
+    """One-line summary of a `run_stages()` step result, for the `run` CLI
+    subcommand. `result`'s shape depends on `name` (see `STEPS`)."""
+    if name == "stage0":
+        return f"status={result.stage.status} tool_capable={result.tool_capable}"
+    if name == "stage1":
+        return ", ".join(f"{tier}={stage.status}" for tier, stage in result.items())
+    if name == "stage2a":
+        return (
+            f"status={result.stage.status} proceeds={result.proceeds} "
+            f"({result.tasks_passed}/{result.tasks_total})"
         )
-
-    stage2a = run_stage2a(config_id, results_dir=results_dir, configs_dir=configs_dir)
-    outcome.stage2a = stage2a
-    if stage2a.stage.status != "completed":
-        outcome.stopped_reason = f"stage2a {stage2a.stage.status}: {stage2a.stage.detail}"
-        return outcome
-    if not stage2a.proceeds:
-        outcome.stopped_reason = "failed Stage 2A gate"
-        return outcome
-
-    stage2b = run_stage2b(config_id, results_dir=results_dir, configs_dir=configs_dir)
-    outcome.stage2b = stage2b
-    if stage2b.status != "completed":
-        outcome.stopped_reason = f"stage2b {stage2b.status}: {stage2b.detail}"
-        return outcome
-
-    outcome.stage3 = run_stage3(config_id, results_dir=results_dir, configs_dir=configs_dir)
-    return outcome
+    if name == "stage2b":
+        return f"status={result.status}"
+    return str(result)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -741,6 +853,14 @@ def main(argv: list[str] | None = None) -> int:
     stage2a = sub.add_parser("stage2a", help="run §9 Stage 2A: Suite W at 8K")
     stage2a.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
     stage2a.add_argument("--context", type=int, default=8192)
+    stage2a.add_argument("--driver", choices=("native", "pi"), default="native")
+
+    stage2b = sub.add_parser(
+        "stage2b", help="run §9 Stage 2B: Suite T at 8K, for Stage 2A survivors"
+    )
+    stage2b.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
+    stage2b.add_argument("--context", type=int, default=8192)
+    stage2b.add_argument("--driver", choices=("native", "pi"), default="native")
 
     stage5b = sub.add_parser(
         "stage5b-compact", help="run §9 Stage 5B's context-compaction experiment"
@@ -748,8 +868,13 @@ def main(argv: list[str] | None = None) -> int:
     stage5b.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
     stage5b.add_argument("--context", type=int, default=8192)
 
-    full = sub.add_parser("full", help="run Stage 0 through Stage 3 for one configuration")
-    full.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
+    run = sub.add_parser("run", help="run an ordered list of stages via run_stages()")
+    run.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
+    run.add_argument(
+        "--stages", required=True,
+        help="comma-separated stage names, e.g. stage0,stage1,stage2a,stage2b",
+    )
+    run.add_argument("--driver", choices=("native", "pi"), default="native")
 
     args = parser.parse_args(argv)
 
@@ -776,7 +901,7 @@ def main(argv: list[str] | None = None) -> int:
         return exit_code
 
     if args.command == "stage2a":
-        outcome = run_stage2a(args.config_id, context_length=args.context)
+        outcome = run_stage2a(args.config_id, context_length=args.context, driver=args.driver)
         print(f"status: {outcome.stage.status}")
         if outcome.stage.status == "completed":
             print(
@@ -791,6 +916,17 @@ def main(argv: list[str] | None = None) -> int:
         print(outcome.stage.detail)
         return 1
 
+    if args.command == "stage2b":
+        outcome = run_stage2b(args.config_id, context_length=args.context, driver=args.driver)
+        print(f"status: {outcome.status}")
+        if outcome.status == "completed":
+            if outcome.skipped_min_context:
+                print(f"skipped (min_context): {', '.join(outcome.skipped_min_context)}")
+            print(f"raw records: {outcome.raw_path}")
+            return 0
+        print(outcome.detail)
+        return 1
+
     if args.command == "stage5b-compact":
         outcomes = run_stage5b_compact(args.config_id, context_length=args.context)
         exit_code = 0
@@ -803,27 +939,20 @@ def main(argv: list[str] | None = None) -> int:
                 exit_code = 1
         return exit_code
 
-    if args.command == "full":
-        outcome = run_full(args.config_id)
-        print(f"config: {outcome.config_id}")
-        print(f"stage0: tool_capable={outcome.stage0.tool_capable if outcome.stage0 else None}")
-        if outcome.stage1:
-            for tier, stage in outcome.stage1.items():
-                print(f"stage1 {tier}: {stage.status}")
-        if outcome.stage2a:
-            print(
-                f"stage2a: proceeds={outcome.stage2a.proceeds} "
-                f"({outcome.stage2a.tasks_passed}/{outcome.stage2a.tasks_total})"
-            )
-        if outcome.stage2b:
-            print(f"stage2b: {outcome.stage2b.status}")
-        if outcome.stage3:
-            for suite_name, stage in outcome.stage3.items():
-                print(f"stage3 {suite_name}: {stage.status}")
-        if outcome.stopped_reason:
-            print(f"stopped: {outcome.stopped_reason}")
+    if args.command == "run":
+        stage_names = [name.strip() for name in args.stages.split(",") if name.strip()]
+        outcome = run_stages(args.config_id, stage_names, driver=args.driver)
+        print(f"config: {outcome.config_id}  driver: {outcome.driver}")
+        for name in outcome.stage_names:
+            result = outcome.results.get(name)
+            if result is None:
+                print(f"{name}: not attempted")
+                continue
+            print(f"{name}: {_describe_step_result(name, result)}")
+        if outcome.stopped_at is not None:
+            print(f"stopped at: {outcome.stopped_at}")
             return 1
-        print("completed through Stage 3")
+        print("completed every requested stage")
         return 0
 
     return 2
