@@ -66,6 +66,11 @@ reported separately, and never feeds the controlled comparison.
 Raw JSONL under `results/` is the record. Reports regenerate from it (§10.1) and are never
 hand-edited. If a report looks wrong, fix the generator.
 
+### Commit messages
+
+Write a concise summary of what changed. Do not add a contributor sign-off, `Co-authored-by`
+trailer, or tool attribution.
+
 ---
 
 ## Invariants
@@ -90,7 +95,7 @@ Changing one of these changes what the benchmark measures.
 ```sh
 .venv/bin/python fixtures/build_workspace.py
 .venv/bin/python fixtures/build_testrepo.py
-.venv/bin/python -m harness.gates      # oracle 20/20, both controls 0/20
+.venv/bin/python -m harness.gates      # oracle 20/20, both controls 0/20, driver parity 20/20
 .venv/bin/python -m pytest -q
 ```
 
@@ -126,14 +131,20 @@ environment capture, the Stage 0/1 tasks, a resumable stage runner covering Stag
 Stage 3 and Stage 5B's compaction variant, `harness/report.py`, and `run_stages()` (§9.3;
 unit-tested).
 
+The four §8 gates all pass, including the driver-parity gate (`harness/oracle.py`'s
+`pi_parity_driver`): the oracle's tool sequence, graded as `PiDriver` leaves a run, still
+reaches 20/20.
+
 Verified end-to-end against a real model: `python -m harness.smoke` (one task); `python -m
 harness.stages stage0 <config_id>` — all six §2 configurations, all tool-capable; `python -m
 harness.stages stage1 <config_id>` — LFM-M8, both tiers; the `pi` driver — smoke-tested against
-one Suite W and one Suite T task, both passed; `python -m harness.report` against the
-real data those produced.
+one Suite W and one Suite T task, both passed; Stage 2A and Stage 2B run live under `v4` for
+LFM-M8 and LFM-G8, both drivers, at 8192 context; `python -m harness.report` against the real
+data those produced.
 
-Not built: the `pi` driver, and Stage 5B's recommended-default sampling pass (conditional on a
-detector that hasn't fired yet — no Suite W/T data exists to check it against). Stage 2A/2B/3
-and Stage 5B's compaction experiment are buildable (`python -m harness.stages
-{stage2a,full,stage5b-compact} <config_id>`) but not yet attempted live — hours per run, a
-deliberate separate action. See [`implementation-plan.md`](implementation-plan.md).
+Not run live: Stage 3, and Stage 5B's compaction experiment (`python -m harness.stages
+{stage3,stage5b-compact} <config_id>`) — hours per run, a deliberate separate action. Stage 5B's
+recommended-default sampling pass is now warranted — the §4.2 detector has fired for the
+`native` runs of both LFM-G8 and LFM-M8 — but is an operator action, not automated. Stage 2A/2B
+data for the other four configurations is still uncollected. See
+[`implementation-plan.md`](implementation-plan.md).

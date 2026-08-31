@@ -369,6 +369,23 @@ def oracle_driver(task: Task, sandbox: Sandbox) -> RunOutcome:
     )
 
 
+def pi_parity_driver(task: Task, sandbox: Sandbox) -> RunOutcome:
+    """The §8 driver-parity gate.
+
+    Runs the oracle's tool sequence, then presents the result the way the `pi`
+    driver does: no `calls` log and no sandbox path-error count, because `pi`
+    works the real filesystem through its own tools and never enters
+    `harness/sandbox.py` (§4.1). Grading must still reach 20/20 from final
+    fixture state and the answer alone — which is what proves no assertion
+    depends on `native`'s transcript structure, and so that Stage 5A's
+    cross-check is sound.
+    """
+    outcome = oracle_driver(task, sandbox)
+    outcome.calls = []
+    sandbox.path_errors = 0
+    return outcome
+
+
 def stub_driver(task: Task, sandbox: Sandbox) -> RunOutcome:
     """Negative control: never calls a tool, never knows anything."""
     return RunOutcome(

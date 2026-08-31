@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import sys
 
-from .oracle import DECOY_TASKS, decoy_driver, oracle_driver, stub_driver
+from .oracle import (
+    DECOY_TASKS,
+    decoy_driver,
+    oracle_driver,
+    pi_parity_driver,
+    stub_driver,
+)
 from .runner import run_task
 from .tasks import ALL_TASKS
 from .tasks.smoke import STAGE0_TASKS
@@ -55,6 +61,9 @@ def main() -> int:
     decoy_passed, _ = _run(
         decoy_driver, f"adversarial control (must score 0/20; decoys: {', '.join(DECOY_TASKS)})"
     )
+    parity_passed, parity_failures = _run(
+        pi_parity_driver, "driver parity (must score 20/20)"
+    )
 
     stage0_total = len(STAGE0_TASKS)
     stage0_oracle_passed, stage0_oracle_failures = _run(
@@ -68,11 +77,13 @@ def main() -> int:
     oracle_ok = oracle_passed == total
     stub_ok = stub_passed == 0
     decoy_ok = decoy_passed == 0
+    parity_ok = parity_passed == total
     stage0_oracle_ok = stage0_oracle_passed == stage0_total
     stage0_stub_ok = stage0_stub_passed == 0
     print(f"oracle              {oracle_passed}/{total}   {'PASS' if oracle_ok else 'FAIL'}")
     print(f"negative control    {stub_passed}/{total}   {'PASS' if stub_ok else 'FAIL'}")
     print(f"adversarial control {decoy_passed}/{total}   {'PASS' if decoy_ok else 'FAIL'}")
+    print(f"driver parity       {parity_passed}/{total}   {'PASS' if parity_ok else 'FAIL'}")
     print(
         f"stage 0 oracle      {stage0_oracle_passed}/{stage0_total}   "
         f"{'PASS' if stage0_oracle_ok else 'FAIL'}"
@@ -81,18 +92,27 @@ def main() -> int:
         f"stage 0 negative    {stage0_stub_passed}/{stage0_total}   "
         f"{'PASS' if stage0_stub_ok else 'FAIL'}"
     )
-    print("driver parity       pending: requires the pi driver (§8)")
-
     if oracle_failures:
         print("\noracle failures:")
         for line in oracle_failures:
+            print(f"  {line}")
+    if parity_failures:
+        print("\ndriver parity failures (an assertion depends on native's transcript):")
+        for line in parity_failures:
             print(f"  {line}")
     if stage0_oracle_failures:
         print("\nstage 0 oracle failures:")
         for line in stage0_oracle_failures:
             print(f"  {line}")
 
-    if not (oracle_ok and stub_ok and decoy_ok and stage0_oracle_ok and stage0_stub_ok):
+    if not (
+        oracle_ok
+        and stub_ok
+        and decoy_ok
+        and parity_ok
+        and stage0_oracle_ok
+        and stage0_stub_ok
+    ):
         print("\nGates failed. Per §8 the task or assertion is wrong, not the model.")
         return 1
 

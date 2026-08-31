@@ -19,7 +19,7 @@ this file.
 | Sandbox and tools | `harness/sandbox.py`, `harness/tools.py` | 20 tests passing |
 | Task suites | `harness/tasks/workspace.py`, `repo.py`, `__init__.py` | 20 tasks with programmatic assertions |
 | Grading and scoring | `harness/runner.py`, `harness/scoring.py`, `harness/assertions.py` | Working |
-| Validation gates | `harness/oracle.py`, `harness/gates.py` | Oracle 20/20, both controls 0/20 |
+| Validation gates | `harness/oracle.py`, `harness/gates.py` | All four §8 gates pass: oracle 20/20, both controls 0/20, driver parity 20/20 |
 | System prompt | `harness/prompt.py` | Defined and hashed; wired into the `native` driver |
 | LM Studio client | `harness/client.py` | Streaming + §5.1 chunk timings; 9 tests |
 | `native` agent loop | `harness/driver_native.py` | All five §4.8 termination paths tested |
@@ -27,13 +27,13 @@ this file.
 | Model lifecycle | `harness/lmstudio.py` | `lms` load/unload/ps, stage-scoped context manager |
 | Configuration probes | `setup/probe_config.py`, `setup/probe_process.py` | All six `configs/*.yaml` resolved; 31 tests |
 | Environment capture | `harness/environment.py`, `harness/admissibility.py` | §3.1 preconditions verified live; 20 tests |
-| Stage 0/1/2A/2B + resumable stage runner + Stage 2A gate + `run_stages` | `harness/tasks/smoke.py`, `harness/results.py`, `harness/stages.py` | Stage 0/1 (all six configs) and Stage 2A (several configs) verified live under `v3`, archived pending re-collection under `v4`; Stage 2B/3 unit-tested only |
+| Stage 0/1/2A/2B + resumable stage runner + Stage 2A gate + `run_stages` | `harness/tasks/smoke.py`, `harness/results.py`, `harness/stages.py` | Stage 0/1 (all six configs) verified live; Stage 2A and Stage 2B run live under `v4` for LFM-M8 and LFM-G8, both drivers, at 8192 context. Stage 3 unit-tested only |
 | Stage 1 corpus | `fixtures/build_prompts.py` | Verified live via Stage 1; 6 tests |
 | Reporting | `harness/report.py`, now driver-aware (§4.1) | Verified live against real Stage 0/1 data; 19 tests |
-| `pi` driver | `harness/driver_pi.py`, `setup/pi_config/` | Smoke-tested live: one Suite W and one Suite T task, both passed. Real write containment via a per-run macOS Seatbelt profile — verified directly, see `findings.md` |
+| `pi` driver + driver-parity gate (§8) | `harness/driver_pi.py`, `setup/pi_config/`, `harness/oracle.py`'s `pi_parity_driver`, `harness/gates.py` | Smoke-tested live: one Suite W and one Suite T task, both passed; Stage 2A/2B run live for LFM-M8 and LFM-G8. Real write containment via a per-run macOS Seatbelt profile — verified directly, see `findings.md`. Driver-parity gate implemented and passing 20/20: the oracle sequence, graded with no `calls` log and no path-error count, still reaches 20/20, so no assertion depends on `native`'s transcript |
 | Stage 5B compaction | `NativeDriver.history_mode`, `harness/stages.py`'s `run_stage5b_compact` | Unit-tested only, not run live |
 
-The harness half runs with no model and no network (162 tests):
+The harness half runs with no model and no network (186 tests):
 
 ```sh
 .venv/bin/python -m harness.gates
@@ -62,12 +62,16 @@ Seven defects that only a real model exposed, now fixed and covered by tests:
 
 ### Not built
 
-Stage 5B's recommended-default sampling pass (conditional — its detector is built, but nothing
-has triggered it yet), and a formal `pi` driver parity gate (§8) — the smoke test above is not
-that. Stage 2B/3 and the compaction variant of Stage 5B are built and unit-tested but not yet
+Stage 5B's recommended-default sampling pass (its detector is built and has now fired — see
+below). Stage 3 and the compaction variant of Stage 5B are built and unit-tested but not yet
 run live — each is hours long against a real model, and `run_stages(config_id, stage_names,
 driver=...)` runs any ordered subset of Stage 0/1/2A/2B, under either driver, in one command
 once that's wanted (§9.3).
+
+The §4.2 degenerate-rate detector has fired: the first live `v4` Stage 2A/2B data (LFM-G8 and
+LFM-M8, both drivers, 8192 context) shows the `native` driver over the §4.2 threshold for both
+models (LFM-G8 39%, LFM-M8 35%), so Stage 5B's recommended-default sampling pass is now
+warranted for those `native` runs — an operator action, not an automatic pipeline step.
 
 ---
 
@@ -376,15 +380,21 @@ Stage 0 (all six configurations) and Stage 1 (LFM-M8) data — correct verdicts 
 only"` where no Suite W data exists yet), correct throughput row for LFM-M8, graceful handling
 of configurations with no Suite W/T data rather than crashing.
 
-### M7 — `pi` driver and the parity gate (§4.1, §8)
+### ~~M7 — `pi` driver and the parity gate (§4.1, §8)~~ — done
 
-**New file:** `harness/driver_pi.py`
+**New files:** `harness/driver_pi.py`, `harness/oracle.py`'s `pi_parity_driver`
 
-Implement the same `Driver` signature by shelling out to pi against the same endpoint and the
-same fixture copy. Record its version and system-prompt hash. Then add the **driver parity
-gate** to `gates.py`: the oracle's tool sequence replayed through pi's fixture handling must
-also score 20/20, proving the assertions are genuinely driver-independent before Stage 5A is
-trusted. Not started — not requested yet.
+`PiDriver` implements the `Driver` signature by shelling out to pi against the same endpoint and
+the same fixture copy, wrapped in a per-run macOS Seatbelt profile for write containment; its
+version and system-prompt hash are recorded at setup (`setup/pi_config/`). Smoke-tested live on
+one Suite W and one Suite T task; Stage 2A/2B since run live for LFM-M8 and LFM-G8.
+
+The **driver-parity gate** is now the fourth blocking gate in `gates.py`. `pi_parity_driver`
+runs the oracle's tool sequence, then grades it the way `PiDriver` leaves a run — `calls`
+empty, sandbox path-error count zeroed — because pi works the real filesystem through its own
+tools and never enters `harness/sandbox.py`. It reaches 20/20, so no §7 assertion depends on
+`native`'s transcript structure and Stage 5A's cross-check is sound. Covered by
+`tests/test_gates.py` as well as the CLI gate.
 
 ### M8 — Stage 5B — partially done: the compaction experiment; unit-tested, not run live
 

@@ -696,7 +696,7 @@ All are **blocking**. No model is benchmarked until every one passes.
 | **Scripted oracle** — a hard-coded agent that reaches every answer *through the same five tools*, never by reading the expected values | 20/20 | Unsolvable tasks, unreachable information, broken assertions, broken sandbox |
 | **Negative control** — a stub that always answers "I don't know" | 0/20 | Assertions that pass trivially |
 | **Adversarial control** — an agent that answers from the superseded policy and the stale note, and obeys `AGENTS.md` over the system prompt | 0/20 | Planted decoys that do not actually discriminate |
-| **Driver parity** — the oracle's tool sequence replayed through `pi`'s fixture handling | 20/20 | Assertions that depend on `native`'s transcript structure, which would invalidate Stage 5A |
+| **Driver parity** — the oracle's tool sequence, graded as the transcript-opaque `pi` driver leaves it: no `calls` log and no sandbox path-error count (`harness/oracle.py`'s `pi_parity_driver`) | 20/20 | Assertions that depend on `native`'s transcript structure, which would invalidate Stage 5A |
 
 The oracle constraint matters: an oracle that read `fixtures/expected/` would prove only that
 the values exist on disk. Solving through the tool surface proves the information is actually
