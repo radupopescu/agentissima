@@ -8,8 +8,11 @@ no model is benchmarked until they pass.
 
 from __future__ import annotations
 
+import argparse
 import sys
+from contextlib import nullcontext
 
+from .container import container_session
 from .oracle import (
     DECOY_TASKS,
     decoy_driver,
@@ -22,7 +25,7 @@ from .tasks import ALL_TASKS
 from .tasks.smoke import STAGE0_TASKS
 
 
-def _run(driver, label: str, tasks: list = ALL_TASKS) -> tuple[int, list[str]]:
+def _run(driver, label: str, tasks: list = ALL_TASKS, executor=None) -> tuple[int, list[str]]:
     print(f"\n=== {label} ===")
     print(f"{'task':<6}{'pass':<6}{'prog':<6}{'calls':<7}{'invalid':<9}{'secs':<7}reason")
 
@@ -30,7 +33,7 @@ def _run(driver, label: str, tasks: list = ALL_TASKS) -> tuple[int, list[str]]:
     failures = []
     for task in tasks:
         try:
-            result = run_task(task, driver)
+            result = run_task(task, driver, executor=executor)
         except Exception as exc:  # a broken solver or assertion, not a model failure
             failures.append(f"{task.id}: {type(exc).__name__}: {exc}")
             print(f"{task.id:<6}{'ERR':<6}{'-':<6}{'-':<7}{'-':<9}{'-':<7}{type(exc).__name__}")
@@ -53,24 +56,50 @@ def _run(driver, label: str, tasks: list = ALL_TASKS) -> tuple[int, list[str]]:
     return passed, failures
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="harness.gates")
+    parser.add_argument(
+        "--executor", choices=("container", "host"), default="container",
+        help="where tool commands run (§4.6). The container is the environment "
+             "the benchmark actually measures in; --executor host is for "
+             "offline development only and does not validate what a stage runs.",
+    )
+    args = parser.parse_args(argv)
+
     total = len(ALL_TASKS)
 
-    oracle_passed, oracle_failures = _run(oracle_driver, "oracle (must score 20/20)")
-    stub_passed, _ = _run(stub_driver, "negative control (must score 0/20)")
+    if args.executor == "container":
+        session = container_session(network="bridge")
+    else:
+        print("WARNING: --executor host does not validate the environment a "
+              "stage runs in (§4.6). Offline development only.\n")
+        session = nullcontext(None)
+
+    with session as executor:
+        return _gates(total, executor)
+
+
+def _gates(total: int, executor) -> int:
+    oracle_passed, oracle_failures = _run(
+        oracle_driver, "oracle (must score 20/20)", executor=executor
+    )
+    stub_passed, _ = _run(stub_driver, "negative control (must score 0/20)", executor=executor)
     decoy_passed, _ = _run(
-        decoy_driver, f"adversarial control (must score 0/20; decoys: {', '.join(DECOY_TASKS)})"
+        decoy_driver,
+        f"adversarial control (must score 0/20; decoys: {', '.join(DECOY_TASKS)})",
+        executor=executor,
     )
     parity_passed, parity_failures = _run(
-        pi_parity_driver, "driver parity (must score 20/20)"
+        pi_parity_driver, "driver parity (must score 20/20)", executor=executor
     )
 
     stage0_total = len(STAGE0_TASKS)
     stage0_oracle_passed, stage0_oracle_failures = _run(
-        oracle_driver, "stage 0 oracle (must score 3/3)", STAGE0_TASKS
+        oracle_driver, "stage 0 oracle (must score 3/3)", STAGE0_TASKS, executor=executor
     )
     stage0_stub_passed, _ = _run(
-        stub_driver, "stage 0 negative control (must score 0/3)", STAGE0_TASKS
+        stub_driver, "stage 0 negative control (must score 0/3)", STAGE0_TASKS,
+        executor=executor,
     )
 
     print("\n=== gates ===")
