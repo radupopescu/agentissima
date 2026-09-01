@@ -22,12 +22,11 @@ exposes (§5.3: metric availability is per driver, nulls are never estimated).
 from __future__ import annotations
 
 import json
-import os
-import signal
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from .execution import ExecutionError, Executor, HostExecutor
 from .sandbox import Sandbox
 from .tools import ToolCall
 from .types import RunOutcome, Task
@@ -126,6 +125,9 @@ class PiDriver:
     config_dir: Path = CONFIG_DIR
     permission_extension: Path = PERMISSION_EXTENSION
     pi_binary: str = "pi"
+    # Where pi itself runs (§4.6). Defaults to the host, which is the
+    # pre-container behaviour; stages pass the container executor.
+    executor: Executor = field(default_factory=HostExecutor)
 
     def __call__(self, task: Task, sandbox: Sandbox) -> RunOutcome:
         workdir = sandbox.root.parent
@@ -138,9 +140,10 @@ class PiDriver:
             encoding="utf-8",
         )
 
-        env = dict(os.environ)
-        env["PI_CODING_AGENT_DIR"] = str(self.config_dir)
-        env["TMPDIR"] = str(tmp_dir)
+        env = {
+            "PI_CODING_AGENT_DIR": str(self.config_dir),
+            "TMPDIR": str(tmp_dir),
+        }
 
         argv = [
             "sandbox-exec", "-f", str(profile_path),
@@ -162,16 +165,10 @@ class PiDriver:
             argv += ["--append-system-prompt", task.extra_rules]
 
         try:
-            process = subprocess.Popen(
-                argv,
-                cwd=sandbox.root,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                start_new_session=True,
+            result = self.executor.spawn(
+                argv, cwd=sandbox.root, timeout_s=self.wall_clock_limit_s, env=env
             )
-        except OSError:
+        except ExecutionError:
             return RunOutcome(
                 task_id=task.id,
                 root=sandbox.root,
@@ -179,16 +176,7 @@ class PiDriver:
                 termination_reason="server_error",
             )
 
-        timed_out = False
-        try:
-            stdout, _ = process.communicate(timeout=self.wall_clock_limit_s)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            try:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            stdout, _ = process.communicate()
+        stdout, timed_out = result.output, result.timed_out
 
         return _outcome_from_output(task, sandbox, stdout, timed_out=timed_out)
 

@@ -247,13 +247,15 @@ driver under which §4.5's no-repair accounting is measurable, and because it ex
 modes a production harness conceals: under `native`, LFM2.5 reliably navigates to the correct
 file and then fails to terminate, which `pi` papers over.
 
-**What is pinned, and what is only recorded.** `pi` is *not* frozen into a fixed configuration:
-that would yield "pi as configured in August 2026", which decays as pi improves and defeats the
-reason for choosing it. Instead:
+**What is pinned, and what is only recorded.** `pi`'s *configuration* is not frozen — freezing
+its prompt or tool set would yield "pi as configured in August 2026", which decays as pi
+improves and defeats the reason for choosing it. Its *version* is pinned, because execution
+happens in a tool image (§4.6) and an image contains one version by construction. Instead:
 
 | | Treatment |
 |---|---|
-| pi's own version, resolved thinking level, context-file discovery state | **Recorded** in `environment.json`, so drift is detectable after the fact |
+| pi's own version | **Pinned per image** (§4.6): pi is installed into the tool image at a fixed version, recorded in the image manifest and in `environment.json`. Updating pi is an image rebuild, which is a deliberate, versioned act rather than an ambient change. This supersedes the earlier record-but-do-not-pin treatment, which could not survive moving execution into a container — the container has to contain *some* version |
+| Resolved thinking level, context-file discovery state | **Recorded** in `environment.json`, so drift is detectable after the fact |
 | Ambient discovery — extensions, skills, prompt templates, project-local approval | **Pinned off** (`--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-approve`). This isolates the machine, not pi. `PI_CODING_AGENT_DIR` already isolates the global slot; project-local discovery resolves against the fixture copy |
 | pi's system prompt, tool set, thinking level | **Not pinned.** These are pi's identity as a harness |
 | The task's `extra_rules` (§4.3) | **Always delivered**, via `--append-system-prompt`, which appends to pi's prompt rather than replacing it. Delivering the task's stimulus is part of the task definition, not a per-driver choice |
@@ -384,7 +386,7 @@ the model.
   Segments are split on `|`, `;`, `&&` and `||`, so pipes and globs work while `cat x | sh` is
   refused. `$(…)` and backtick command substitution are refused outright. Anything else returns
   `exit=127 command not permitted`.
-- Per-command timeout 30 s. No network access.
+- Per-command timeout 30 s.
 - **All tool output is truncated to 4000 characters**, with an explicit trailing marker:
 
   ```
@@ -396,6 +398,29 @@ the model.
 - Generated artefacts (`__pycache__`, `.pytest_cache`, `*.pyc`) are excluded from every tree
   comparison, so running the test suite does not by itself count as modifying the repository.
 - Tool errors are always returned as tool results, never as HTTP errors or exceptions.
+
+#### Execution environment
+
+Commands do not run on the host. Every command the agent issues, and every command *grading*
+issues (T03 and T09 run `pytest` to decide their verdict), executes inside a pinned Linux
+container. Both drivers use the same container, so the tool surface is identical across the
+controlled comparison and the Stage 5A cross-check.
+
+| | |
+|---|---|
+| Image | Built from a Dockerfile in the repository; `python`, `pytest`, `pyyaml`, GNU coreutils, Node, and `pi` at a pinned version. Its identity, a build-time manifest hash and the Dockerfile hash are recorded per session |
+| Mount | The run's fixture copy only. Nothing else on the host is visible — **reads as well as writes** |
+| Limits | Process and memory caps, and `no-new-privileges` |
+| Network | Both drivers' containers share one network policy. `pi` must reach LM Studio on the host; `native`'s model traffic never enters the container, because its loop runs in the harness process (§4.2). The policy is recorded per session |
+| Timeouts | Enforced *inside* the container, so a command's whole process group is reaped. A host-side kill cannot reach an in-container process tree |
+
+This replaces an earlier macOS Seatbelt profile that confined writes but permitted all reads.
+Real `v4` data showed the gap being exercised: 29 of 240 `bash` calls reached outside the
+fixture, 20 of them scanning from `/` — see `findings.md`. The container closes it structurally,
+and makes the userland a recorded artefact rather than whatever the host happens to ship.
+
+**Measurement stays on the host.** The model runs in LM Studio on macOS, so every §5.2 memory
+figure, the swap window, and the §3.1 preconditions measure the host and are unaffected.
 
 ### 4.7 What the truncation limit implies
 

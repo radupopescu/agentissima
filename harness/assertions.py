@@ -13,6 +13,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from .execution import ExecutionError
 from .sandbox import tree_hashes
 from .types import Ctx
 
@@ -100,27 +101,22 @@ def function_has_docstring(source: str, name: str) -> bool:
     return False
 
 
-def pytest_passes(root: Path, target: str = "", ignore: str = "") -> bool:
-    """Run pytest inside ``root`` and report whether it exited 0."""
-    import os
-    import subprocess
+def pytest_passes(ctx: Ctx, target: str = "", ignore: str = "") -> bool:
+    """Run pytest against the run's fixture and report whether it exited 0.
 
-    env = dict(os.environ)
-    venv_bin = Path(__file__).resolve().parent.parent / ".venv" / "bin"
-    env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
-    env.pop("PYTHONPATH", None)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-
-    command = ["pytest", "-q"]
+    Takes `Ctx`, not a bare path, because grading must execute where the run
+    executed (§4.6): under a container executor the fixture's tests have to run
+    in the container, not on the host. `Ctx` is the right carrier because
+    assertions already receive it and nothing else in grading shells out.
+    """
+    command = "pytest -q"
     if ignore:
-        command.append(f"--ignore={ignore}")
+        command += f" --ignore={ignore}"
     if target:
-        command.append(target)
+        command += f" {target}"
 
     try:
-        completed = subprocess.run(
-            command, cwd=root, env=env, capture_output=True, text=True, timeout=120
-        )
-    except subprocess.TimeoutExpired:
+        result = ctx.executor.run(command, cwd=ctx.root, timeout_s=120.0)
+    except ExecutionError:
         return False
-    return completed.returncode == 0
+    return not result.timed_out and result.exit_code == 0

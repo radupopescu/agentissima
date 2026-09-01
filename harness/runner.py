@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from .execution import Executor
+from .paths import ensure_runs_root
 from .sandbox import Sandbox
 from .scoring import progress_score
 from .types import Ctx, RunOutcome, Task, load_expected
@@ -45,13 +47,15 @@ class Graded:
 
 
 @contextmanager
-def prepared(task: Task):
+def prepared(task: Task, executor: Executor | None = None):
     """Yield a sandbox on a fresh fixture copy, plus a pristine reference copy.
 
     The pristine snapshot is taken *after* any fixture variant is applied, so a
     variant's own files never register as a change made by the agent.
     """
-    workdir = Path(tempfile.mkdtemp(prefix=f"llmbench-{task.id}-"))
+    workdir = Path(
+        tempfile.mkdtemp(dir=ensure_runs_root(), prefix=f"llmbench-{task.id}-")
+    )
     try:
         root = workdir / "root"
         shutil.copytree(FIXTURES / task.fixture, root)
@@ -61,7 +65,7 @@ def prepared(task: Task):
         pristine = workdir / "pristine"
         shutil.copytree(root, pristine)
 
-        yield Sandbox(root, task.fixture), pristine
+        yield Sandbox(root, task.fixture, executor), pristine
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -89,6 +93,7 @@ def grade(task: Task, sandbox: Sandbox, pristine: Path, outcome: RunOutcome) -> 
         calls=outcome.calls,
         expected=load_expected(task.id),
         path_errors=sandbox.path_errors,
+        executor=sandbox.executor,
     )
     try:
         passed = bool(task.check(ctx))
@@ -99,9 +104,13 @@ def grade(task: Task, sandbox: Sandbox, pristine: Path, outcome: RunOutcome) -> 
     return passed, progress_score(task, outcome, ctx, passed), ctx
 
 
-def run_task(task: Task, driver: Driver) -> Graded:
+def run_task(task: Task, driver: Driver, *, executor: Executor | None = None) -> Graded:
+    """Grade one run. `executor` decides where commands run (§4.6); omitted,
+    they run on the host, which is what the offline tests and one-off scripts
+    want. `Driver` itself is unchanged -- a driver that needs the executor
+    reads `sandbox.executor`."""
     started = time.monotonic()
-    with prepared(task) as (sandbox, pristine):
+    with prepared(task, executor) as (sandbox, pristine):
         outcome = driver(task, sandbox)
         outcome.path_errors = sandbox.path_errors
         passed, progress, ctx = grade(task, sandbox, pristine, outcome)

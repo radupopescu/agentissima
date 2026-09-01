@@ -62,7 +62,7 @@ def _check_t02(ctx: Ctx) -> bool:
 
 
 def _check_t03(ctx: Ctx) -> bool:
-    return pytest_passes(ctx.root) and only_changed(ctx, set(ctx.expected["allowed_changes"]))
+    return pytest_passes(ctx) and only_changed(ctx, set(ctx.expected["allowed_changes"]))
 
 
 def _shape_t03(ctx: Ctx) -> bool:
@@ -147,7 +147,7 @@ def _variant_t09(root: Path) -> None:
 
 
 def _check_t09(ctx: Ctx) -> bool:
-    return pytest_passes(ctx.root, target="tests/test_close.py") and unchanged_under(
+    return pytest_passes(ctx, target="tests/test_close.py") and unchanged_under(
         ctx, "tests"
     )
 

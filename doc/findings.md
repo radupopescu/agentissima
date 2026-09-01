@@ -16,6 +16,40 @@ drawn from.
 
 ---
 
+## 2026-09-01 — the agent's `bash` tool read outside the fixture in 12% of calls
+
+**What happened.** The Seatbelt profile in `harness/driver_pi.py` denies writes outside the
+fixture copy and says nothing about reads, and `pi-permission-system` cannot inspect `bash`
+because a shell command is an opaque string with no structured path argument. Surveying every
+`bash` call in the 120 `v4` pi runs across LFM-G8 and LFM-M8:
+
+| Count | Command |
+|---:|---|
+| 7 | `find / -name "expense.csv" -type f` |
+| 4 | `find / -name "balances.py"` |
+| 1 each | `find / -name "*.csv" -type f \| head -50`, `find / -type f -name "*.py" \| grep -i balance`, `find / -name "*expense*"`, `find / -name "expenses.csv"`, `find / -name "posting.py"`, `find / -name "test_posting.py"`, `find /private -name "posting.py"`, `cd /private && python -m pytest …`, `ls -la /root/`, `wc -l /root/data/expenses.csv`, and three more |
+
+**29 of 240 bash calls — 12% — reached outside the fixture; 20 scanned from `/`.**
+
+**Why the model does it.** W04 and T04 deliberately give a wrong path in the prompt. When
+`read` fails, the model falls back to searching the filesystem, and nothing bounds where. This
+is a tool-recovery behaviour the tasks are designed to provoke, so it is not rare or incidental.
+
+**What it cost.** The exposure was read-only, under the user's own account, into a process the
+user launched — no worse than the access pi already has when run normally, and nothing was
+exfiltrated (the agent has no network path out). Two real costs, though: a `find /` traverses
+the whole disk until pi's 30-second tool timeout kills it, which plausibly accounts for several
+of the 600-second run timeouts; and file names from the host enter the model's context, which
+no assertion reads but which leaves the run not fully specified.
+
+**Resolution.** Recorded in `benchmark.md` §4.6: execution moves into a pinned Linux container
+mounting only the fixture copy, so reads outside it are impossible rather than merely
+discouraged. The 29 commands above are replayed as a regression gate.
+
+**Evidence:** `results/{LFM-G8,LFM-M8}-8192/transcripts/*.json`, the `v4` pi transcripts.
+
+---
+
 ## 2026-08-31 — pi injects the fixture's `AGENTS.md` into its system prompt on every run
 
 **What happens.** pi discovers context files and embeds them in the system prompt, so they never

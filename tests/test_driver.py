@@ -491,13 +491,14 @@ def test_generation_rate_counts_reasoning_tokens():
 def test_w01_accepts_naming_the_decoy_as_superseded(tmp_path):
     """A model that names the authoritative cap *and* explains the superseded
     figure has done the task better, and must not be failed for thoroughness."""
+    from harness.execution import HostExecutor
     from harness.tasks.workspace import _check_w01
     from harness.types import Ctx
 
     expected = {"cap": "85", "decoy": "72"}
     ctx = lambda answer: Ctx(  # noqa: E731
         root=tmp_path, pristine=tmp_path, answer=answer, calls=[],
-        expected=expected, path_errors=0,
+        expected=expected, path_errors=0, executor=HostExecutor(),
     )
 
     assert _check_w01(ctx("The cap is £85, per policy/travel.md."))

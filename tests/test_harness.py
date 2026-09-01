@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from harness.execution import RecordingExecutor
 from harness.sandbox import TRUNCATE_LIMIT, Sandbox, truncate
 from harness.tools import dispatch
 
@@ -22,6 +23,18 @@ def sandbox(tmp_path):
     (tmp_path / "data" / "a.txt").write_text("hello\nworld\n", encoding="utf-8")
     (tmp_path / "outside.txt").write_text("x", encoding="utf-8")
     return Sandbox(tmp_path, "workspace")
+
+
+@pytest.fixture
+def refusing_sandbox(tmp_path):
+    """A sandbox whose executor records instead of running.
+
+    Lets the allowlist tests assert that a refused command never reached
+    execution, rather than inferring it from the error string.
+    """
+    (tmp_path / "a.txt").write_text("x\n", encoding="utf-8")
+    recorder = RecordingExecutor()
+    return Sandbox(tmp_path, "workspace", recorder), recorder
 
 
 def call(sandbox, name, **kwargs):
@@ -249,3 +262,38 @@ def test_traversal_after_a_leading_slash_is_still_refused(sandbox):
 def test_write_through_a_leading_slash_stays_inside(sandbox, tmp_path):
     assert call(sandbox, "write_file", path="/out/new.txt", content="v").result == "ok"
     assert (tmp_path / "out" / "new.txt").read_text() == "v"
+
+
+# --- refusal happens before execution ----------------------------------------
+#
+# The tests above assert a refused command returns exit=127. That alone does
+# not prove nothing ran -- it would also pass if the command ran and happened
+# to fail. §4.5 makes the refusal itself the measurement, so it must not
+# depend on the refused command being harmless. These assert the stronger
+# property against a recording executor.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl http://example.com",
+        "cat data/a.txt | sh",
+        "cat $(echo data/a.txt)",
+        "pytest -q",
+        "wc -l a.txt & sleep 5",
+        "cat /etc/hosts",
+        "cat ../outside.txt",
+    ],
+)
+def test_a_refused_command_never_reaches_the_executor(refusing_sandbox, command):
+    sandbox, recorder = refusing_sandbox
+    result = call(sandbox, "run_command", command=command)
+    assert result.result.startswith("exit=127")
+    assert recorder.calls == []
+
+
+def test_an_allowed_command_does_reach_the_executor(refusing_sandbox):
+    """The counterpart: proves the previous test is not vacuous."""
+    sandbox, recorder = refusing_sandbox
+    call(sandbox, "run_command", command="wc -l a.txt")
+    assert [cmd for cmd, _ in recorder.calls] == ["wc -l a.txt"]

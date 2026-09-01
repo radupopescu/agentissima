@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .execution import Executor
 from .tools import ToolCall
 
 EXPECTED_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "expected"
@@ -32,6 +33,11 @@ class Ctx:
     calls: list[ToolCall]
     expected: dict
     path_errors: int
+    # Where an assertion runs a command (§4.6). T03 and T09 decide their
+    # verdict by running `pytest`, so grading needs the same executor the
+    # agent's tools used -- otherwise it would judge the fixture from a
+    # different environment than the one the run happened in.
+    executor: Executor
 
     def read(self, relative: str) -> str | None:
         path = self.root / relative

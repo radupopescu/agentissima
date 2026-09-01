@@ -518,6 +518,58 @@ data was already due for re-collection. Archive the `v4` agent files as
 `archive/<stage>-v4.jsonl` before re-running: `_check_task_set_version_matches` will otherwise
 refuse to resume into those sessions, which is the intended loud failure.
 
+### M10 — containerised tool execution (§4.6)
+
+Approved 2026-09-01. Agent *and grading* commands move off the macOS host into a pinned Linux
+container. Motivation is measured, not theoretical: 29 of 240 `bash` calls in the `v4` pi data
+read outside the fixture, 20 scanning from `/` (`findings.md`). The Seatbelt profile confines
+writes only, and `pi-permission-system` cannot inspect an opaque `bash` string.
+
+Three gains beyond closing that gap: containment stops being per-driver, so an `opencode` driver
+needs no new containment work; the tool userland becomes a recorded artefact instead of whatever
+macOS ships; and process/memory limits become available.
+
+**Runtime: OrbStack**, chosen on measurement. Start 0.30 s, `exec` 0.04 s, bind mounts
+round-trip, and `host.docker.internal` reaches LM Studio bound to host loopback. Apple
+`container` was evaluated and rejected: it routes through a real vmnet interface and cannot
+reach a loopback-bound server without either exposing LM Studio to the LAN — which admits GPU
+contention and KV-cache disturbance that §5.4's nonce prefixes cannot detect — or inserting an
+unrecorded proxy into the measurement path.
+
+**An image, not an OrbStack machine.** A machine is mutable state; an image is declarative, and
+matches how the fixtures, model bytes, prompt and task set are already pinned.
+
+Decisions recorded so they are not re-litigated:
+
+- **`native` stays in-process on the host.** §5.1 timings are timestamped at chunk arrival, and
+  the loop is §4.5/§4.8 made executable. Stage 5A needs the task, fixture, model and *tool
+  environment* identical — not the agent architecture, which §4.1 already treats as the variable
+  under test.
+- **Both containers share one network policy.** `native`'s allowlist includes `python`, which can
+  open sockets, so both drivers' tools have egress today; giving `native` `--network none` while
+  `pi` keeps bridge would *introduce* an asymmetry rather than preserve one. Restricting both to
+  LM Studio only is a genuine §4.6 improvement and a separate, verified change.
+- **pi is pinned per image** — §4.1 amended. An image contains one version by construction.
+- **`_escapes_sandbox` is unchanged.** Relaxing it would alter the `path_errors` W04/T04 grade
+  on; a separate, separately-versioned decision if ever wanted.
+
+Full phased plan, interfaces and verification strategy: `~/.claude/plans/cozy-rolling-origami.md`.
+Phases P0 (spec) through P6 (re-collection). `TASK_SET_VERSION` goes to `v6` at P4, alongside
+`harness/version.py` and §11's version table — the spec's §4.1/§4.6 lead in P0, but the version
+marker moves only when the code does, so the recorded version never claims a change that has not
+happened.
+
+**Sequencing:** this lands *before* the pending `v4` re-collection, so there is one re-collection
+at `v6` rather than two.
+
+**Risk most likely to cost real re-measurement:** OrbStack's VM competes with the model for
+memory. §2.2 admissibility and §3.1's `free_memory_bytes` were measured on 16 GiB with no Linux
+VM resident, and BON-G2 at 64K already needs 11.22 GiB. Idle OrbStack measures ~0.30 GiB, so
+headroom looks adequate — but record the VM allocation and re-check whether any §2 admissibility
+verdict moves. This is invisible in a diff.
+
+---
+
 ---
 
 ## 5. Open questions

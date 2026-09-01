@@ -8,12 +8,11 @@ can recover from them (§4.5). Nothing here raises into the agent loop.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import shlex
-import signal
-import subprocess
 from pathlib import Path
+
+from .execution import TIMEOUT_EXIT_CODE, ExecutionError, Executor, HostExecutor
 
 TRUNCATE_LIMIT = 4000
 
@@ -80,11 +79,17 @@ def tree_hashes(root: Path) -> dict[str, str]:
 class Sandbox:
     """A rooted, non-networked working directory exposing the five tools."""
 
-    def __init__(self, root: Path, fixture: str) -> None:
+    def __init__(
+        self, root: Path, fixture: str, executor: Executor | None = None
+    ) -> None:
         self.root = Path(root).resolve()
         self.fixture = fixture
         self.allowlist = ALLOWLISTS[fixture]
         self.path_errors = 0
+        # Where `run_command` actually runs (§4.6). Defaults to the host so a
+        # bare `Sandbox(root, fixture)` still works in tests and one-off
+        # scripts; stages and gates pass the container executor explicitly.
+        self.executor: Executor = executor if executor is not None else HostExecutor()
 
     # --- path handling ------------------------------------------------------
 
@@ -206,40 +211,14 @@ class Sandbox:
                 if _escapes_sandbox(token):
                     return f"exit=127 path outside working directory: {token}"
 
-        env = dict(os.environ)
-        venv_bin = Path(__file__).resolve().parent.parent / ".venv" / "bin"
-        env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
-        env.pop("PYTHONPATH", None)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-
-        # `start_new_session=True` puts the shell and everything it spawns in
-        # their own process group. A plain `subprocess.run(..., timeout=)` only
-        # kills the shell on timeout, not its children — a `grep -r` the shell
-        # forked keeps running, orphaned, after the shell is gone. Killing the
-        # whole group on timeout is what actually stops the work.
+        # Validation above is host-side and stays here: the allowlist, the
+        # segment split and `_escapes_sandbox` are what §4.5 measures, and they
+        # must be identical whichever executor runs the command.
         try:
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                cwd=self.root,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-        except OSError as exc:
+            result = self.executor.run(command, cwd=self.root, timeout_s=timeout_s)
+        except ExecutionError as exc:
             return f"exit=127 could not start command: {exc}"
 
-        try:
-            stdout, stderr = process.communicate(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-            return f"exit=124 command timed out after {timeout_s:g}s"
-
-        output = (stdout or "") + (stderr or "")
-        return f"exit={process.returncode}\n{output}"
+        if result.timed_out:
+            return f"exit={TIMEOUT_EXIT_CODE} command timed out after {timeout_s:g}s"
+        return f"exit={result.exit_code}\n{result.output}"
