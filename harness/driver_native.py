@@ -29,7 +29,12 @@ MALFORMED_CALL_LIMIT = 5
 
 # §11: any change to the loop bumps this, and that invalidates comparison with
 # earlier results. Recorded per session in environment.json.
-DRIVER_VERSION = "1"
+# "2": the loop is unchanged, but its tool environment is not -- `run_command`
+# now executes in the §4.6 container rather than on the host, so what a model
+# observes from a command changed (GNU rather than BSD coreutils, a pinned
+# Python). `_DRIVER_VERSIONS` is what a reader consults to ask "was this run
+# contained?", so it has to move even though driver_native.py barely did.
+DRIVER_VERSION = "2"
 
 
 @dataclass

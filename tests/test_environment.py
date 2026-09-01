@@ -14,6 +14,7 @@ import pytest
 
 from harness import environment, lmstudio
 from harness.environment import PreconditionError, SessionEnvironment
+from harness.driver_native import DRIVER_VERSION as NATIVE_DRIVER_VERSION
 from harness.version import TASK_SET_VERSION
 
 
@@ -73,7 +74,10 @@ def test_capture_writes_a_complete_environment(happy_machine, tmp_path, monkeypa
     assert payload["macos_build"] == "24F74"
     assert payload["lmstudio_version"] == "0.4.21"
     assert payload["driver"] == "native"
-    assert payload["driver_version"] == "1"
+    assert payload["driver_version"] == NATIVE_DRIVER_VERSION
+    # §4.6: where the tools ran. `capture` was given no executor here, so it
+    # records the host -- a stage always passes the container's.
+    assert payload["execution"] == {"mode": "host"}
     assert payload["task_set_version"] == TASK_SET_VERSION
     assert payload["ac_power"] is True
     assert payload["low_power_mode"] is False

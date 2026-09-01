@@ -14,6 +14,7 @@ from contextlib import contextmanager
 import pytest
 
 from harness import lmstudio, stages
+from harness.execution import HostExecutor
 from harness.client import StreamedTurn, ToolCallFragment
 from harness.tasks.smoke import STAGE0_TASKS
 
@@ -88,6 +89,12 @@ def _fake_loaded(model, context_length=None, identifier=None, gpu=None):
     )
 
 
+@contextmanager
+def _fake_container_session(*args, **kwargs):
+    """Stand-in for the §4.6 container: runs on the host instead."""
+    yield HostExecutor()
+
+
 def _patch_common(monkeypatch, resolved=RESOLVED, env_sha256="env-hash-1"):
     monkeypatch.setattr(stages.environment, "load_resolved", lambda *a, **k: dict(resolved))
     monkeypatch.setattr(stages.lmstudio, "loaded", _fake_loaded)
@@ -96,6 +103,11 @@ def _patch_common(monkeypatch, resolved=RESOLVED, env_sha256="env-hash-1"):
         lambda *a, **k: types.SimpleNamespace(sha256=env_sha256),
     )
     monkeypatch.setattr(stages, "find_inference_pid", lambda: None)
+    # These tests cover stage *logic* -- gates, resume, record shape. The
+    # execution environment is covered by tests/test_execution.py and
+    # tests/test_isolation.py, so starting a real container here would add a
+    # docker dependency and ~27 container starts for no extra coverage.
+    monkeypatch.setattr(stages, "container_session", _fake_container_session)
 
 
 def test_stage0_gate_passes_at_six_of_nine(tmp_path, monkeypatch):

@@ -1,9 +1,10 @@
 # Local LLM Agent Benchmark
 
-**Task set version:** `v5`. See §11 for what invalidates results.
+**Task set version:** `v6`. See §11 for what invalidates results.
 
 | Version | Change |
 |---|---|
+| `v6` | Tool execution moved off the macOS host into a pinned Linux container (§4.6). Closes a measured read gap — 29 of 240 `bash` calls in the `v4` pi data read outside the fixture, 20 scanning from `/` (`findings.md`) — and makes the tool userland a recorded artefact. The commands a model runs now resolve to GNU coreutils and a pinned Python rather than whatever macOS ships, so `v5` results are not comparable. Both driver versions bump with it |
 | `v5` | `PiDriver.DRIVER_VERSION` bumped to `2`: the task's `extra_rules` is now delivered via `--append-system-prompt` (it was never sent, inverting W07 and T07), ambient discovery is pinned off, and tool calls are recovered from pi's message log so the progress score works (§4.1, §5.3). §11 lists a driver version among the bumping triggers. `native` behaviour is unchanged, but `task_set_version` is a single global marker, so `v4` results are not comparable under either driver |
 | `v4` | `run_command`'s `v3` fix for `&` backgrounding also split `2>&1`/`1>&2`-style redirection in two, refusing an ordinary command with a nonsensical error (§4.6). Fixed with a lookbehind excluding `&` immediately after `>`. Changes tool behaviour, so `v3` results are not comparable |
 | `v3` | `run_command` sandboxing fixed: absolute paths and `..` no longer reach the real filesystem, `&` backgrounding no longer bypasses the allowlist, and a timed-out command's children are actually killed (§4.6). Changes tool behaviour, so `v2` results are not comparable |

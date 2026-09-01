@@ -313,6 +313,7 @@ def capture(
     configs_dir: str | Path | None = None,
     verify_hash: bool = True,
     session_id: str | None = None,
+    executor: Any = None,
 ) -> SessionEnvironment:
     """Assert §3.1 preconditions and write results/<session>/environment.json.
 
@@ -385,6 +386,10 @@ def capture(
         # `extra_rules` *is* delivered, via `--append-system-prompt` (§4.3).
         "system_prompt_sha256": None if driver == "pi" else prompt_sha256(extra_rules),
         "pi": _pi_provenance() if driver == "pi" else None,
+        # Where the agent's tools and grading ran (§4.6). Everything else in
+        # this file measures the *host*, because the model runs in LM Studio on
+        # macOS; this block is the one part describing the container.
+        "execution": executor.provenance if executor is not None else {"mode": "host"},
         "fixture_git_sha": fixture_fingerprint(),
         "task_set_version": TASK_SET_VERSION,
         "ac_power": True,

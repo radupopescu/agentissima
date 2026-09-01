@@ -59,6 +59,8 @@ from typing import Any
 from . import environment, lmstudio, results
 from .admissibility import UNSUPPORTED, classify_declared
 from .client import LMStudioClient
+from .container import container_session
+from .execution import Executor
 from .driver_native import NativeDriver
 from .driver_pi import PiDriver
 from .metrics import MemorySampler, SwapWindow, find_inference_pid, nonce_prefix, turn_metrics
@@ -69,6 +71,12 @@ from .types import Task
 from .version import TASK_SET_VERSION
 
 RESULTS_DIR = Path("results")
+
+# §4.6: both drivers share one network policy. `pi` must reach LM Studio on the
+# host, and `native`'s allowlist includes `python`, which can open sockets --
+# so giving only one of them egress would introduce an asymmetry rather than
+# remove one. Restricting both to LM Studio alone is a separate change.
+CONTAINER_NETWORK = "bridge"
 STAGE_IDENTIFIER = "bench"
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "prompts"
 
@@ -195,6 +203,8 @@ class ModelSession:
     overhead: float
     pid: int | None
     existing: set[tuple]
+    # Where the stage's tool commands run (§4.6). One container per stage.
+    executor: Executor
 
 
 @contextmanager
@@ -228,7 +238,9 @@ def _model_session(
     raw_path = session_dir / "raw" / f"{stage_name}.jsonl"
     transcripts_dir = session_dir / "transcripts"
 
-    with lmstudio.loaded(
+    # The container is entered *outside* the model load: it starts in 0.3 s and
+    # a failure here must not waste the minutes a load costs.
+    with container_session(network=CONTAINER_NETWORK) as executor, lmstudio.loaded(
         resolved["model_path"],
         context_length=context_length,
         identifier=STAGE_IDENTIFIER,
@@ -241,6 +253,7 @@ def _model_session(
             configs_dir=configs_dir,
             verify_hash=verify_hash,
             session_id=session_id,
+            executor=executor,
         )
 
         existing = results.existing_keys(raw_path)
@@ -264,6 +277,7 @@ def _model_session(
             overhead=overhead,
             pid=pid,
             existing=existing,
+            executor=executor,
         )
 
 
@@ -280,6 +294,7 @@ def _record_for(
     driver_label: str,
     pid: int | None,
     transcripts_dir: Path,
+    executor: Executor | None = None,
 ) -> dict:
     # The driver belongs in the identifier, not just in the stage's file name.
     # Without it two drivers' runs of the same task share a `run_id` and so a
@@ -290,7 +305,7 @@ def _record_for(
 
     sampler = MemorySampler(pid).start() if pid is not None else None
     with SwapWindow() as swap:
-        graded = run_task(task, driver)
+        graded = run_task(task, driver, executor=executor)
     peak = sampler.stop() if sampler is not None else None
 
     transcript_path = None
@@ -362,7 +377,9 @@ def _driver_factory(
             client=session.client, overhead_s=session.overhead, history_mode=history_mode
         )
     if driver == "pi":
-        return lambda session: PiDriver(model=STAGE_IDENTIFIER)
+        return lambda session: PiDriver(
+            model=STAGE_IDENTIFIER, executor=session.executor
+        )
     raise ValueError(f"unknown driver: {driver!r}")
 
 
@@ -423,6 +440,7 @@ def run_stage(
                         driver_label=driver_label,
                         pid=session.pid,
                         transcripts_dir=session.transcripts_dir,
+                        executor=session.executor,
                     )
                     results.append_record(session.raw_path, record)
     except UnsupportedContextError as exc:
