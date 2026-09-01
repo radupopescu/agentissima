@@ -21,7 +21,7 @@ FIELDS: tuple[str, ...] = (
     "prompt_tokens", "completion_tokens", "total_tokens",
     "peak_memory_bytes", "swap_delta_bytes", "swap_flag",
     "steps", "tool_calls", "invalid_calls", "path_errors",
-    "termination_reason", "passed", "progress_score", "flaky",
+    "termination_reason", "passed", "progress_score", "condition_failures", "flaky",
     "wall_clock_s", "transcript_path",
 )
 

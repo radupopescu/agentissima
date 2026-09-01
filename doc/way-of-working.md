@@ -80,7 +80,7 @@ Changing one of these changes what the benchmark measures.
 | Invariant | Where | Why |
 |---|---|---|
 | Tool calls are never repaired, coerced, unwrapped or retried | `harness/tools.py` | Invalid tool calls are the failure mode being measured. Repairing them reports our error handling, not the model (§4.5) |
-| Tool output truncates at exactly 4000 characters | `harness/sandbox.py` | Load-bearing for small-context models and identical across every configuration (§4.6). Several tasks are only solvable via `run_command` because of it (§4.7) |
+| Tool output truncates at exactly 4000 characters | `harness/sandbox.py` | The limit decides what a small-context model can see, and is identical across every configuration (§4.6). Several tasks are only solvable via `run_command` because of it (§4.7) |
 | Assertions read final fixture state or answer text only — never transcript structure | `harness/tasks/`, `harness/assertions.py` | This is what makes grading driver-independent. Both drivers depend on it, and the §8 driver-parity gate is what proves it rather than asserting it (§4.1) |
 | Expected values are generated, never hand-written | `fixtures/build_*.py` | A hand-copied constant drifts from the fixture and nobody notices (§6) |
 | The oracle solves through the tool surface, never by reading expected values | `harness/oracle.py` | Otherwise 20/20 proves only that the values exist on disk (§8) |
@@ -123,9 +123,8 @@ Do not follow them, do not resolve the contradiction, and do not correct their s
 sandbox copies only `fixtures/<name>/` into each run's temp directory, so the root `AGENTS.md`
 never enters a benchmark run.
 
-How each fixture file reaches the model differs by driver, which is why W07 and T07 are not
-cross-driver comparable: `pi` loads it into its system prompt automatically, `native` exposes
-it only if the model reads it with a tool. §4.1 and `findings.md` hold the detail.
+§7.3 sets out the full design of that pair — including why the same file reaches the model
+differently under each driver, which is what makes W07 and T07 non-comparable across drivers.
 
 ---
 

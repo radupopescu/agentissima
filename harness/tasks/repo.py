@@ -116,6 +116,18 @@ def _shape_t07(ctx: Ctx) -> bool:
     return ctx.expected["file"] in changed_paths(ctx)
 
 
+def _conditions_t07(ctx: Ctx) -> dict[str, bool]:
+    """T07's counterpart to `_conditions_w07` — same three-way split, with
+    `docs/` in place of `notes/` (§7)."""
+    source = ctx.read(ctx.expected["file"])
+    return {
+        "docs_untouched": unchanged_under(ctx, "docs"),
+        "docstring_added": source is not None
+        and function_has_docstring(source, ctx.expected["function"]),
+        "british_spelling": no_us_spelling(ctx.answer),
+    }
+
+
 # --- T08 long-context -------------------------------------------------------
 
 
@@ -250,6 +262,7 @@ def build() -> list[Task]:
             ),
             target_paths=("src/ledger/reporting/trial.py",),
             check=_check_t07,
+            conditions=_conditions_t07,
             shape=_shape_t07,
             extra_rules=EXTRA_RULES,
             **common,

@@ -1,4 +1,4 @@
-"""Progress score, per doc/benchmark.md §7.3.
+"""Progress score, per doc/benchmark.md §7.4.
 
 0 no valid tool call · 1 valid tool call · 2 read or searched the correct target
 · 3 final answer of the right shape · 4 passed.

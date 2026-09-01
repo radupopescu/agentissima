@@ -95,7 +95,8 @@ before — otherwise the re-run inherits the same defect. Roughly 6–12 h per s
 
 ## 2. Interfaces already fixed
 
-New code must fit these. They are load-bearing and were chosen deliberately.
+New code must fit these. They were chosen deliberately; changing one changes what the
+benchmark measures.
 
 ```python
 # harness/runner.py
@@ -540,7 +541,7 @@ Not blockers, but each needs an answer recorded in `benchmark.md` when resolved.
 
 ## 6. Known risks
 
-- **Near-zero pass rates.** Anticipated, and the progress score (§7.3) and two-suite split (§7)
+- **Near-zero pass rates.** Anticipated, and the progress score (§7.4) and two-suite split (§7)
   exist for it. Resist the urge to make tasks easier once results arrive — that changes
   `task_set_version` and discards comparability. Record the finding instead.
 - **Truncation dominating failures.** §4.7 explains why several Suite W tasks require

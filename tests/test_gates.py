@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from harness.oracle import decoy_driver, oracle_driver, pi_parity_driver, stub_driver
 from harness.runner import run_task
-from harness.tasks import ALL_TASKS
+from harness.tasks import ALL_TASKS, BY_ID
 
 
 def _score(driver) -> int:
@@ -39,3 +39,30 @@ def test_parity_driver_presents_no_transcript_detail():
         graded = run_task(task, pi_parity_driver)
         assert graded.tool_calls == 0
         assert graded.path_errors == 0
+
+
+# --- condition breakdown (§10.1) ---------------------------------------------
+#
+# A multi-condition assertion returns one boolean, so a recorded failure does
+# not say which requirement was missed. These guard the breakdown that fixes
+# that, and that it stays diagnostic — never an input to pass/fail.
+
+
+def test_the_oracle_fails_no_condition():
+    for task_id in ("W07", "T07"):
+        graded = run_task(BY_ID[task_id], oracle_driver)
+        assert graded.passed
+        assert graded.condition_failures == ()
+
+
+def test_the_adversarial_control_loses_on_the_agents_md_arms():
+    """The decoy obeys AGENTS.md: it writes under notes//docs/ and answers in
+    American English, while still doing the task's actual work."""
+    w07 = run_task(BY_ID["W07"], decoy_driver)
+    assert not w07.passed
+    assert set(w07.condition_failures) == {"notes_untouched", "british_spelling"}
+    assert "rowcount_correct" not in w07.condition_failures
+
+
+def test_a_task_without_a_breakdown_records_none():
+    assert run_task(BY_ID["W01"], oracle_driver).condition_failures is None

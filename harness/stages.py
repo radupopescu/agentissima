@@ -332,6 +332,13 @@ def _record_for(
         "termination_reason": graded.termination_reason,
         "passed": graded.passed,
         "progress_score": graded.progress,
+        # Which named sub-conditions failed, for a task that declares a
+        # breakdown; null otherwise. Diagnostic only -- `passed` is the
+        # verdict (§10.1).
+        "condition_failures": (
+            list(graded.condition_failures)
+            if graded.condition_failures is not None else None
+        ),
         # Deciding this needs every repetition of a task, which may not all
         # exist yet under resume; left to `harness/report.py` (§9.1).
         "flaky": None,
@@ -651,6 +658,7 @@ def _stage1_record(
         "termination_reason": turn.finish_reason or "unknown",
         "passed": None,
         "progress_score": None,
+        "condition_failures": None,
         "flaky": None,
         "wall_clock_s": round(elapsed, 3),
         "transcript_path": None,

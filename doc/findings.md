@@ -318,7 +318,7 @@ comparable across runtimes; ignore it.
 T02 on LFM-M8, varying only `max_tokens`: pass at 1024, fail at 2048, pass at 4096. A budget
 effect cannot produce that shape. This is the near-but-not-bitwise determinism §4.2 warns about,
 showing up as an outcome flip. It was the first hard evidence that §9.1's three repetitions and
-the `flaky` flag are load-bearing, not ceremonial.
+the `flaky` flag are needed: a single run of this task can report either outcome.
 
 ### Harness defects found and fixed
 

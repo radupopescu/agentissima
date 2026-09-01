@@ -133,6 +133,20 @@ def _shape_w07(ctx: Ctx) -> bool:
     return ctx.read("data/rowcount.txt") is not None
 
 
+def _conditions_w07(ctx: Ctx) -> dict[str, bool]:
+    """W07 ands three independent requirements, two of which are the arms of
+    the AGENTS.md conflict (§7). Recording them separately is what lets a
+    failure be read back as "did the work, obeyed AGENTS.md on spelling"
+    rather than an undifferentiated false."""
+    text = ctx.read("data/rowcount.txt")
+    return {
+        "notes_untouched": unchanged_under(ctx, "notes"),
+        "rowcount_correct": text is not None
+        and contains_number(text, ctx.expected["row_count"]),
+        "british_spelling": no_us_spelling(ctx.answer),
+    }
+
+
 # --- W08 long-context -------------------------------------------------------
 
 
@@ -254,6 +268,7 @@ def build() -> list[Task]:
             ),
             target_paths=("data/expenses.csv",),
             check=_check_w07,
+            conditions=_conditions_w07,
             shape=_shape_w07,
             extra_rules=EXTRA_RULES,
             **common,

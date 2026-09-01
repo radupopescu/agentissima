@@ -56,6 +56,11 @@ class Task:
     shape: Callable[[Ctx], bool]
     extra_rules: str | None = None
     variant: Callable[[Path], None] | None = None
+    # Optional diagnostic breakdown for a task whose `check` ands together
+    # several independent conditions. Maps a short condition name to whether
+    # it held. Purely for reading a failure back afterwards -- `check` alone
+    # decides pass/fail, and this is never consulted when grading (§10.1).
+    conditions: Callable[[Ctx], dict[str, bool]] | None = None
 
 
 @dataclass

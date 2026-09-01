@@ -37,6 +37,9 @@ class Graded:
     termination_reason: str
     wall_clock_s: float
     answer: str
+    # Names of the sub-conditions that did NOT hold, for a task that declares
+    # a breakdown; None where the task declares none. Diagnostic only.
+    condition_failures: tuple[str, ...] | None = None
     metrics: dict | None = None
     transcript: list[dict] | None = None
 
@@ -63,6 +66,21 @@ def prepared(task: Task):
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def condition_failures(task: Task, ctx: Ctx) -> tuple[str, ...] | None:
+    """Which of a task's declared sub-conditions failed (§10.1).
+
+    A multi-condition `check` returns one boolean, so a recorded failure does
+    not say *which* requirement was missed — W07 cannot be told apart from
+    "never wrote the file" without reading the transcript. This records the
+    breakdown alongside the verdict. It never influences pass/fail: `check`
+    remains the single authority, and a task with no `conditions` records
+    `null`.
+    """
+    if task.conditions is None:
+        return None
+    return tuple(name for name, held in task.conditions(ctx).items() if not held)
+
+
 def grade(task: Task, sandbox: Sandbox, pristine: Path, outcome: RunOutcome) -> tuple[bool, int, Ctx]:
     ctx = Ctx(
         root=sandbox.root,
@@ -86,7 +104,8 @@ def run_task(task: Task, driver: Driver) -> Graded:
     with prepared(task) as (sandbox, pristine):
         outcome = driver(task, sandbox)
         outcome.path_errors = sandbox.path_errors
-        passed, progress, _ = grade(task, sandbox, pristine, outcome)
+        passed, progress, ctx = grade(task, sandbox, pristine, outcome)
+        failures = condition_failures(task, ctx)
         elapsed = time.monotonic() - started
 
     return Graded(
@@ -103,4 +122,5 @@ def run_task(task: Task, driver: Driver) -> Graded:
         answer=outcome.answer,
         metrics=outcome.metrics,
         transcript=outcome.transcript,
+        condition_failures=failures,
     )
