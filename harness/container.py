@@ -26,6 +26,13 @@ from .paths import RUNS_ROOT, ensure_runs_root, sweep_stale
 
 IMAGE_TAG = "agentissima-tools:v1"
 DOCKERFILE = Path(__file__).resolve().parent.parent / "setup" / "docker" / "Dockerfile"
+PI_CONFIG_DIR = Path(__file__).resolve().parent.parent / "setup" / "pi_config"
+
+# Only the two authored files, mounted individually into the image's own
+# /pi-config. Bind-mounting the whole directory would also bring
+# `setup/pi_config/bin/fd` -- a cached *macOS* binary that pi's `find` tool
+# looks for before PATH and cannot execute in Linux.
+PI_CONFIG_FILES = ("models.json", "pi-permissions.jsonc")
 
 # Where RUNS_ROOT is mounted inside the container.
 MOUNT_POINT = PurePosixPath("/runs")
@@ -259,6 +266,10 @@ def container_session(
     sweep_stale(root)
 
     mounts = ["-v", f"{root.resolve()}:{MOUNT_POINT}"]
+    for name in PI_CONFIG_FILES:
+        source = PI_CONFIG_DIR / name
+        if source.is_file():
+            mounts += ["-v", f"{source.resolve()}:/pi-config/{name}:ro"]
     for host_path, container_path in (extra_mounts or {}).items():
         mounts += ["-v", f"{Path(host_path).resolve()}:{container_path}"]
 

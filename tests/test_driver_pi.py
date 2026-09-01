@@ -167,6 +167,23 @@ def test_the_permission_extension_survives_no_extensions(tmp_path, monkeypatch):
     assert "--no-extensions" in argv
 
 
+def test_pi_is_no_longer_wrapped_in_sandbox_exec(tmp_path, monkeypatch):
+    """§4.6: the container replaced the Seatbelt profile, which confined writes
+    but permitted every read. Reintroducing sandbox-exec would mean two
+    containment mechanisms with different semantics."""
+    argv = _argv_for(_task(None), tmp_path, monkeypatch)
+    assert "sandbox-exec" not in argv
+    assert argv[0] == "pi"
+
+
+def test_pi_uses_the_containers_config_and_extension(tmp_path, monkeypatch):
+    from harness.driver_pi import CONTAINER_PERMISSION_EXTENSION
+
+    argv = _argv_for(_task(None), tmp_path, monkeypatch)
+    assert argv[argv.index("--extension") + 1] == CONTAINER_PERMISSION_EXTENSION
+    assert not CONTAINER_PERMISSION_EXTENSION.startswith(str(__import__("pathlib").Path.home()))
+
+
 def test_pis_behaviour_is_deliberately_not_frozen(tmp_path, monkeypatch):
     """§4.1: freezing these would make it "pi as configured in August 2026"."""
     argv = _argv_for(_task(None), tmp_path, monkeypatch)

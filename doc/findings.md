@@ -42,9 +42,13 @@ the whole disk until pi's 30-second tool timeout kills it, which plausibly accou
 of the 600-second run timeouts; and file names from the host enter the model's context, which
 no assertion reads but which leaves the run not fully specified.
 
-**Resolution.** Recorded in `benchmark.md` §4.6: execution moves into a pinned Linux container
+**Resolution.** Recorded in `benchmark.md` §4.6: execution moved into a pinned Linux container
 mounting only the fixture copy, so reads outside it are impossible rather than merely
-discouraged. The 29 commands above are replayed as a regression gate.
+discouraged. The commands above are replayed as a regression gate
+(`tests/test_isolation.py`). Two side effects worth noting: `find /` now *completes* instead of
+dying on pi's 30-second tool timeout, recovering wall clock those runs were losing; and the
+macOS Seatbelt profile it replaced has been deleted, since maintaining two containment
+mechanisms with different semantics is worse than one.
 
 **Evidence:** `results/{LFM-G8,LFM-M8}-8192/transcripts/*.json`, the `v4` pi transcripts.
 
@@ -127,7 +131,12 @@ containment as an installable package; it was considered and set aside for this 
 needs a second package (`pi-auto-review`) and its own verification pass, and was one day old at
 the time.
 
-**Residual gap, accepted rather than fixed.** The Seatbelt profile only denies *writes*. A
+**Superseded on 2026-09-01.** pi now runs inside the §4.6 container, so both the write
+confinement described below and the read gap it left are replaced by one boundary. The entry is
+kept because it is the record of why the Seatbelt profile existed and what it did not cover.
+
+**Residual gap, accepted rather than fixed** (as it stood before the container). The Seatbelt
+profile only denies *writes*. A
 `bash` command reading a path outside the working directory (`cat /etc/hosts`) still succeeds.
 Real Stage 2A data confirms this is exercised, not merely possible: in
 `results/LFM-G8-8192/transcripts/LFM-G8-W-W04-r1.json` the model ran

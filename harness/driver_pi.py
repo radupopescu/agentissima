@@ -2,21 +2,21 @@
 
 Unlike `NativeDriver`, pi operates on the real filesystem through its own
 read/write/edit/bash/find/grep/ls tools -- never through `harness/sandbox.py`.
-Containment therefore comes from two independent layers: pi's own
-`pi-permission-system` extension (denies `read`/`write`/`edit`/`find`/`grep`/
-`ls` outside the working directory) and a per-run macOS Seatbelt profile this
-driver wraps every invocation in (denies *writes* anywhere but the fixture
-copy, the isolated pi config directory, and an isolated temp directory --
-kernel-enforced, not string matching). `bash` reads outside the working
-directory are not blocked by either layer; this was a deliberate, recorded
-trade-off (see doc/findings.md) rather than an oversight -- denying `bash`
-outright would stop pi self-verifying Suite T's T03/T09 with pytest.
+Containment is therefore the §4.6 container, which pi runs *inside*: it can see
+the run's fixture copy and nothing else on the host, reads included.
+
+This replaced a macOS Seatbelt profile that confined writes but permitted all
+reads, and pi's own `pi-permission-system`, which cannot inspect `bash` because
+a shell command is an opaque string. The extension is still loaded -- the
+container is the real boundary now, but removing it would change pi's
+observable tool behaviour on top of everything else, and defence in depth costs
+nothing.
 
 pi's own agent loop, retries and termination handling are opaque to this
-driver (§4.1's deliberate confound): `RunOutcome.calls` stays empty (pi's
-tool calls never go through `harness/tools.py`, so §4.5's no-repair
-accounting doesn't apply to them) and metrics are only whatever `--mode json`
-exposes (§5.3: metric availability is per driver, nulls are never estimated).
+driver (§4.1's deliberate confound). Tool calls are reconstructed from pi's
+message log rather than observed as they happen (§5.3), so `invalid_calls`
+is not measurable here: pi repairs internally and a malformed call never
+reaches the log.
 """
 
 from __future__ import annotations
@@ -38,8 +38,11 @@ CONFIG_DIR = REPO_ROOT / "setup" / "pi_config"
 # independent of PI_CODING_AGENT_DIR, so the isolated config directory above
 # never needs its own npm install of it. This does mean the driver depends on
 # the user's personal global pi installation having the package present.
-PERMISSION_EXTENSION = (
-    Path.home() / ".pi" / "agent" / "npm" / "node_modules" / "pi-permission-system"
+# Inside the container these are fixed paths: the image installs the extension
+# globally and creates the agent directory (setup/docker/Dockerfile).
+CONTAINER_CONFIG_DIR = "/pi-config"
+CONTAINER_PERMISSION_EXTENSION = (
+    "/usr/local/lib/node_modules/pi-permission-system"
 )
 
 WALL_CLOCK_LIMIT_S = 600.0  # matches NativeDriver's default
@@ -47,12 +50,16 @@ WALL_CLOCK_LIMIT_S = 600.0  # matches NativeDriver's default
 # §11: any change to the invocation, the seatbelt profile, or the containment
 # story bumps this.
 #
+# "3": pi now runs inside the §4.6 container instead of on the host under a
+# Seatbelt profile. Its tool surface is the pinned Linux image, and reads
+# outside the fixture are impossible rather than merely discouraged.
+#
 # "2": `--append-system-prompt` now delivers `task.extra_rules` (W07/T07 were
 # graded against rules pi was never sent, while pi auto-loaded the fixture's
 # contradicting AGENTS.md), the four discovery flags below isolate ambient
 # machine state, and `RunOutcome.calls` is reconstructed from pi's event
 # stream so the progress score works.
-DRIVER_VERSION = "2"
+DRIVER_VERSION = "3"
 
 # Ambient state must not leak into a run. `PI_CODING_AGENT_DIR` already
 # isolates pi's *global* discovery slot, but project-local discovery resolves
@@ -82,37 +89,33 @@ ISOLATION_FLAGS = (
 # `native` exposes AGENTS.md only if the model chooses to read it.
 
 
-def pi_version(binary: str = "pi") -> str | None:
-    """pi's own version, distinct from this wrapper's `DRIVER_VERSION`."""
+def pi_version(executor=None) -> str | None:
+    """pi's version, distinct from this wrapper's `DRIVER_VERSION`.
+
+    Reported from wherever pi will actually run (§4.6): with an executor, from
+    inside the tool image; without one, from the host. Reporting the host's
+    version for a containerised run would record a version that never ran.
+    """
+    if executor is not None:
+        from pathlib import Path as _Path
+
+        from .paths import ensure_runs_root
+
+        try:
+            result = executor.spawn(
+                ["pi", "--version"], cwd=_Path(ensure_runs_root()), timeout_s=60
+            )
+        except Exception:
+            return None
+        return result.output.strip() or None
+
     try:
         completed = subprocess.run(
-            [binary, "--version"], capture_output=True, text=True, timeout=30
+            ["pi", "--version"], capture_output=True, text=True, timeout=30
         )
     except (OSError, subprocess.SubprocessError):
         return None
     return completed.stdout.strip() or None
-
-
-def _sb_string(value: str) -> str:
-    """Escape a path for use inside a Seatbelt (Scheme) string literal."""
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _seatbelt_profile(writable: list[Path]) -> str:
-    """A minimal write-confinement profile: allow everything by default, then
-    deny all writes except under the given paths. Verified directly (see
-    doc/findings.md): a write attempted outside these paths from inside pi's
-    `bash` tool fails with "Operation not permitted" -- real, kernel-enforced
-    containment, unlike pi-permission-system's own unparsed bash string
-    patterns."""
-    lines = ["(version 1)", "(allow default)", "(deny file-write*)"]
-    for path in writable:
-        lines.append(f'(allow file-write* (subpath "{_sb_string(str(path))}"))')
-    # Apple's per-user temp tree: some Node/npm internals write here even
-    # with TMPDIR overridden. Not the user's real files -- low value target.
-    lines.append('(allow file-write* (regex #"^/private/var/folders/"))')
-    lines.append('(allow file-write* (subpath "/dev"))')
-    return "\n".join(lines) + "\n"
 
 
 @dataclass
@@ -123,36 +126,26 @@ class PiDriver:
     provider: str = "lmstudio"
     wall_clock_limit_s: float = WALL_CLOCK_LIMIT_S
     config_dir: Path = CONFIG_DIR
-    permission_extension: Path = PERMISSION_EXTENSION
     pi_binary: str = "pi"
     # Where pi itself runs (§4.6). Defaults to the host, which is the
     # pre-container behaviour; stages pass the container executor.
     executor: Executor = field(default_factory=HostExecutor)
 
     def __call__(self, task: Task, sandbox: Sandbox) -> RunOutcome:
-        workdir = sandbox.root.parent
-        tmp_dir = workdir / "pi-tmp"
-        tmp_dir.mkdir(exist_ok=True)
-
-        profile_path = workdir / "pi-seatbelt.sb"
-        profile_path.write_text(
-            _seatbelt_profile([sandbox.root, self.config_dir, tmp_dir]),
-            encoding="utf-8",
-        )
-
-        env = {
-            "PI_CODING_AGENT_DIR": str(self.config_dir),
-            "TMPDIR": str(tmp_dir),
-        }
+        # `CONTAINER_CONFIG_DIR` is a container-local directory the image
+        # creates; the two authored config files are mounted into it by
+        # `container_session`. Deliberately not a bind mount of
+        # `setup/pi_config`, which also holds a cached macOS `fd` that pi
+        # would find ahead of PATH and fail to execute.
+        env = {"PI_CODING_AGENT_DIR": CONTAINER_CONFIG_DIR, "TMPDIR": "/tmp"}
 
         argv = [
-            "sandbox-exec", "-f", str(profile_path),
             self.pi_binary, "-p", task.prompt,
             "--provider", self.provider,
             "--model", self.model,
             "--mode", "json",
             "--no-session",
-            "--extension", str(self.permission_extension),
+            "--extension", CONTAINER_PERMISSION_EXTENSION,
             *ISOLATION_FLAGS,
         ]
 

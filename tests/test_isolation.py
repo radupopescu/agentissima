@@ -126,3 +126,32 @@ def test_a_file_written_in_the_container_is_removable_by_the_host(executor, root
     executor.run("mkdir -p sub && echo x > sub/file.txt", cwd=root, timeout_s=15)
     shutil.rmtree(root / "sub")  # raises if the host cannot remove it
     assert not (root / "sub").exists()
+
+
+# --- the pi driver's own environment -----------------------------------------
+
+
+def test_pi_and_its_find_backend_are_in_the_image(executor, root):
+    """pi's `find` tool calls ensureTool("fd"), which downloads a binary when
+    it cannot find one -- a network fetch mid-run. Both names must resolve from
+    PATH so that path is never taken."""
+    result = executor.run("command -v pi; command -v fd; command -v fdfind",
+                          cwd=root, timeout_s=20)
+    assert result.exit_code == 0
+    assert result.output.count("/") >= 3
+
+
+def test_the_cached_macos_fd_is_not_visible(executor, root):
+    """setup/pi_config/bin/fd is a Mach-O binary pi cached on the host. pi
+    looks in its agent dir before PATH, so if that directory were bind-mounted
+    whole, pi would find a binary it cannot execute."""
+    result = executor.run("file /pi-config/bin/fd 2>&1 || true", cwd=root, timeout_s=20)
+    assert "Mach-O" not in result.output
+
+
+def test_the_pi_config_the_container_sees_points_at_the_host(executor, root):
+    """Inside the container `localhost` is the container. pi reached no model
+    at all until models.json named the host explicitly."""
+    result = executor.run("cat /pi-config/models.json", cwd=root, timeout_s=20)
+    assert "host.docker.internal" in result.output
+    assert "localhost" not in result.output

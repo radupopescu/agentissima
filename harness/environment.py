@@ -48,7 +48,7 @@ _DRIVER_VERSIONS = {
 }
 
 
-def _pi_provenance() -> dict[str, Any]:
+def _pi_provenance(executor: Any = None) -> dict[str, Any]:
     """What is recorded about `pi` rather than controlled (§4.1).
 
     Everything here is a drift vector we deliberately do not freeze, so it must
@@ -60,7 +60,7 @@ def _pi_provenance() -> dict[str, Any]:
     something pi requested.
     """
     return {
-        "version": pi_version(),
+        "version": pi_version(executor),
         "isolation_flags": list(PI_ISOLATION_FLAGS),
         "system_prompt": "pi default (not ours; not hashed)",
         "thinking_level": "off",
@@ -385,7 +385,7 @@ def capture(
         # not receive -- wrong rather than merely absent. The task's
         # `extra_rules` *is* delivered, via `--append-system-prompt` (§4.3).
         "system_prompt_sha256": None if driver == "pi" else prompt_sha256(extra_rules),
-        "pi": _pi_provenance() if driver == "pi" else None,
+        "pi": _pi_provenance(executor) if driver == "pi" else None,
         # Where the agent's tools and grading ran (§4.6). Everything else in
         # this file measures the *host*, because the model runs in LM Studio on
         # macOS; this block is the one part describing the container.
