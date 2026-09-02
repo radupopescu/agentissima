@@ -497,7 +497,7 @@ def test_w01_accepts_naming_the_decoy_as_superseded(tmp_path):
 
     expected = {"cap": "85", "decoy": "72"}
     ctx = lambda answer: Ctx(  # noqa: E731
-        root=tmp_path, pristine=tmp_path, answer=answer, calls=[],
+        root=tmp_path, baseline={}, answer=answer, calls=[],
         expected=expected, path_errors=0, executor=HostExecutor(),
     )
 
@@ -509,6 +509,53 @@ def test_w01_accepts_naming_the_decoy_as_superseded(tmp_path):
     assert not _check_w01(ctx("The cap is either £85 or £72."))
     # The decoy alone still fails, which is what the adversarial control does.
     assert not _check_w01(ctx("The cap is £72 per day."))
+
+
+def test_t05_accepts_naming_the_non_raiser_as_a_non_raiser(tmp_path):
+    """`validation.py` defines `ValidationError` and never raises it. An answer
+    that names the four raisers and says so is better than one that stays
+    silent, and must not fail for the extra filename — W01's allowance, applied
+    to a set-equality assertion. Five `v6` runs failed on exactly this."""
+    from harness.execution import HostExecutor
+    from harness.tasks.repo import _check_t05
+    from harness.types import Ctx
+
+    expected = {"files": ["entries.py", "export_csv.py", "file_store.py", "posting.py"]}
+    ctx = lambda answer: Ctx(  # noqa: E731
+        root=tmp_path, baseline={}, answer=answer, calls=[],
+        expected=expected, path_errors=0, executor=HostExecutor(),
+    )
+    four = "entries.py, export_csv.py, file_store.py, posting.py"
+
+    assert _check_t05(ctx(f"They are {four}."))
+    assert _check_t05(ctx(
+        f"They are {four}.\nledger/validation.py defines the class but does not raise it."
+    ))
+    assert _check_t05(ctx(f"They are {four}.\nvalidation.py only defines the class."))
+    # An undisclaimed extra name is still a false positive.
+    assert not _check_t05(ctx(f"They are {four}, validation.py."))
+    # A disclaimer somewhere else in the answer does not excuse it: an answer
+    # may list several extra files and disclaim only one.
+    assert not _check_t05(ctx(
+        f"They are {four}, validation.py and currency.py.\n"
+        "currency.py does not raise it."
+    ))
+    # Missing one of the four fails regardless of any disclaimer.
+    assert not _check_t05(ctx(
+        "They are entries.py, export_csv.py, file_store.py.\n"
+        "validation.py does not raise it."
+    ))
+
+
+def test_t02_asks_for_the_file_it_requires(tmp_path):
+    """The assertion requires the filename because "float rounding" is a
+    plausible guess about a splitting function — so the prompt has to ask for
+    it. Two `v6` runs diagnosed the fault correctly and named only the
+    function."""
+    from harness.tasks.repo import build
+
+    task = next(t for t in build() if t.id == "T02")
+    assert "name the file" in task.prompt
 
 
 def test_turn_with_neither_tool_calls_nor_content_is_not_an_answer(sandbox):

@@ -1,9 +1,10 @@
 # Local LLM Agent Benchmark
 
-**Task set version:** `v6`. See §11 for what invalidates results.
+**Task set version:** `v7`. See §11 for what invalidates results.
 
 | Version | Change |
 |---|---|
+| `v7` | Five changes, batched into one bump because each forces one on its own. **W07's prompt** now asks for the *data* rows rather than "the rows": `v6` showed the same models correcting for the header on W04 and not on W07, so the arithmetic convention was masking the instruction-adherence measurement the task exists for (§7.3). **The change baseline** is a hash map taken before the run instead of a copy of the fixture beside the working one, which the agent could read (§4.6). **`PiDriver.DRIVER_VERSION` bumped to `4`**: a run's message log is assembled from the streamed `message_end` events, so a run the wall clock kills keeps its transcript, calls and progress score (§5.3). **T05** accepts an extra filename that the answer explicitly says does not raise, the counterpart of W01's superseded-figure allowance — five `v6` runs named the four raisers correctly and failed on the disclaimer. **T02's prompt** now asks for the file its assertion has always required, which two `v6` runs lost by naming only the function. Only the last two change any `v6` verdict, and both in the direction of crediting an answer that was right; §11 lists a task prompt and an assertion among the triggers regardless |
 | `v6` | Tool execution moved off the macOS host into a pinned Linux container (§4.6). Closes a measured read gap — 29 of 240 `bash` calls in the `v4` pi data read outside the fixture, 20 scanning from `/` (`findings.md`) — and makes the tool userland a recorded artefact. The commands a model runs now resolve to GNU coreutils and a pinned Python rather than whatever macOS ships, so `v5` results are not comparable. Both driver versions bump with it |
 | `v5` | `PiDriver.DRIVER_VERSION` bumped to `2`: the task's `extra_rules` is now delivered via `--append-system-prompt` (it was never sent, inverting W07 and T07), ambient discovery is pinned off, and tool calls are recovered from pi's message log so the progress score works (§4.1, §5.3). §11 lists a driver version among the bumping triggers. `native` behaviour is unchanged, but `task_set_version` is a single global marker, so `v4` results are not comparable under either driver |
 | `v4` | `run_command`'s `v3` fix for `&` backgrounding also split `2>&1`/`1>&2`-style redirection in two, refusing an ordinary command with a nonsensical error (§4.6). Fixed with a lookbehind excluding `&` immediately after `>`. Changes tool behaviour, so `v3` results are not comparable |
@@ -579,6 +580,16 @@ Two consequences specific to `pi`:
   0-or-4 on every run, which would disable §7.4's whole purpose in the near-zero regime §1.2
   expects. Timing is not recoverable the same way: `pi`'s stream carries no inter-token
   timings, so TTFT and generation throughput stay `null`.
+- **A run's message log is assembled from the stream, not from the terminal event.** `pi` emits
+  the whole log again in `agent_end`, which is authoritative when it arrives — and never
+  arrives for a run the wall clock kills. Reading only that field cost every timed-out run its
+  transcript, its calls and therefore its progress score: nine `v6` runs recorded
+  `tool_calls: 0` and `progress_score: 0`, one of them 59 turns and 288k prompt tokens deep.
+  The log is therefore accumulated from the `message_end` events as they arrive. The *answer*
+  is still read only from a settled run: a killed run's last assistant message is a
+  mid-investigation remark, and grading it would credit work the model never concluded. Any
+  future external-agent driver inherits this rule — never derive a run's record solely from a
+  terminal event, because a timeout is exactly when that event does not come.
 - **The invalid-call count is not measurable under `pi`** and is not in the mandatory list.
   `pi` validates, repairs and retries internally, so a malformed call never reaches its log.
   A recorded `0` means "none observed", not "none happened". §4.5's no-repair accounting is
@@ -693,8 +704,14 @@ The base tree has exactly one failing test: `test_split_posting_balances`.
 variant. Without this, T03's "the whole suite passes" assertion would have to except an
 unrelated failure — exactly the kind of fudge that makes a benchmark unfalsifiable.
 
-A variant is applied to the fresh copy **before** the pristine snapshot is taken, so a
+A variant is applied to the fresh copy **before** the change baseline is taken, so a
 variant's own files never register as a change made by the agent.
+
+The baseline is a map of content hashes, not a second copy of the tree. A copy was the original
+design and was wrong: the whole runs root is bind-mounted into the tool container (§4.6), so the
+reference tree sat beside the working one inside the agent's reach — 8.6% of the `v6` pi runs
+read from it, and a write into it would have silently defeated the comparison that W07, T07 and
+T03 decide their verdicts with. Nothing ever needed the bytes.
 
 ---
 
@@ -720,7 +737,7 @@ Exact prompt text lives in `harness/tasks/workspace.py` and `harness/tasks/repo.
 | W04 | tool-recovery | Row count of `data/expense.csv` — the prompt's path is wrong | correct count **and** ≤3 path errors |
 | W05 | search | Which files under `notes/` mention a given vendor | filename set equals expected exactly; no false positives |
 | W06 | multi-hop | Which expenses require prior written approval | expense-id set equals expected exactly (policy → CSV → settings → rates) |
-| W07 | instruction-adherence | Write a row count to `data/rowcount.txt`, then describe the work | `notes/` byte-identical; file correct; no US spelling in the answer |
+| W07 | instruction-adherence | Write a data-row count to `data/rowcount.txt`, then describe the work | `notes/` byte-identical; file correct; no US spelling in the answer |
 | W08 | long-context | Retention window stated in the 2025 review | contains the expected number |
 | W09 | conflict-resolution | Current total headcount in FTE, and the authoritative source | correct figure **and** names `headcount.csv` |
 | W10 | state-retention | A reference code given up front, then a count written to `data/audit.txt` | file content is exactly `<code>,<count>` |
@@ -730,10 +747,10 @@ Exact prompt text lives in `harness/tasks/workspace.py` and `harness/tasks/repo.
 | ID | Category | Task | Pass assertion |
 |---|---|---|---|
 | T01 | retrieval | Where the default rounding mode is defined, and what it is | mentions `currency.py` and `ROUND_HALF_EVEN` |
-| T02 | investigation | Explain the failing test. Change nothing | names `posting.py` and the faulty operation; **repo byte-identical** |
+| T02 | investigation | Explain the failing test and name the file. Change nothing | names `posting.py` and the faulty operation; **repo byte-identical** |
 | T03 | modification | Fix it so the whole suite passes | `pytest` exits 0; only `posting.py` changed |
 | T04 | tool-recovery | Which function computes the running balance — the prompt's path is wrong | names `running_balance`; ≤3 path errors |
-| T05 | search | Which modules under `src/` raise `ValidationError` | filename set equals expected exactly; no false positives |
+| T05 | search | Which modules under `src/` raise `ValidationError` | filename set equals expected; an extra name passes only if the answer says that file does not raise |
 | T06 | multi-hop | Decimal places used by the CSV export, and where the value comes from | contains the value **and** `defaults.yaml` |
 | T07 | instruction-adherence | Add a docstring to `trial_balance`, then describe the change | `docs/` byte-identical; docstring present (checked by AST); no US spelling |
 | T08 | long-context | The runbook reference for a failed export | contains the expected token |
@@ -766,6 +783,16 @@ zero.
 across drivers.** `pi` loads `AGENTS.md` into its system prompt automatically, so the conflict
 is always live. `native` exposes it only if the model reads it with a tool, so a model that
 never opens the file meets no conflict and passes by simply following the system prompt (§4.1).
+
+**The work half is worded to be unambiguous, deliberately.** W07 asks for the *data* rows, not
+"the rows". Under `v6` the wording was the latter, and `rowcount_correct` became the only
+failing condition in eight of twelve LFM runs — all writing 121, the file's line count including
+its header. The same models, in the same sessions, corrected for the header on W04, whose prompt
+says "expense rows": identical `wc -l` calls, followed by `tail -n +2 | wc -l` on W04 and not on
+W07. A counting convention was therefore deciding a task specified to measure instruction
+adherence, and the conflict arms were almost never reached. This is a specification fix, not a
+weakened task (`way-of-working.md`): the conflict itself is untouched, and W07 remains a
+conjunction a model can still fail on the work.
 
 Because the assertion is a three-way conjunction, every run records `condition_failures`
 (§10.1) naming which arms failed. `["british_spelling"]` — did the work, lost the conflict on

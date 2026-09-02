@@ -16,6 +16,208 @@ drawn from.
 
 ---
 
+## 2026-09-02 — two Suite T tasks were failing correct answers
+
+**T05 — the careful answer failed.** `_check_t05` compared the answer's basename set to the four
+expected raisers exactly. Five `v6` runs (one per LFM configuration, plus a second LFM-G8 run)
+named all four correctly and then added a note of the form "`ledger/validation.py` defines the
+`ValidationError` class but does not raise it itself" — which put a fifth name in the set and
+failed the run. W01 already had the pattern for this: naming the decoy is acceptable when the
+answer identifies it as superseded. T05 had no equivalent.
+
+Replaying the assertion over the `v6` answers: all twelve LFM runs pass under the `v7` check,
+against seven before. **Consequence worth stating: T05 no longer discriminates between the LFM
+configurations at all.** That is the correct outcome — the answers were right — but it removes a
+task from the four that separated them, and Suite T is already near-saturated for LFM.
+
+**T02 — the assertion asked for more than the prompt did.** `_check_t02` requires the answer to
+name `posting.py`; the prompt said only "Explain what causes it". Two `v6` runs (LFM-BF16 r2,
+LFM-M8 r2) diagnosed the fault exactly — float conversion, per-share rounding, 99.99 ≠ 100.00 —
+naming `split_amount` but never the file, and failed. Checked directly: `posting.py` is absent
+from the final message in both and present in every passing run.
+
+Fixed by changing the prompt, not the assertion. Dropping the filename requirement was
+considered and rejected: "float rounding" is a plausible guess about a splitting function, so an
+answer that never locates the fault is not evidence of investigation — which is what §8's
+negative control exists to detect.
+
+**Why both were only visible now.** Neither is a model behaviour; both are grading defects that
+a pass rate alone cannot show. They surfaced from reading the transcripts of failing runs, which
+is the argument for doing that routinely rather than only when a number looks surprising.
+
+**Evidence:** the `v6` T02 and T05 transcripts under `results/LFM-*-8192/transcripts/`.
+
+---
+
+## 2026-09-02 — W07 was measuring a counting convention, not instruction adherence
+
+**What happened.** Across the `v6` pi runs, ten of twelve LFM runs wrote **121** to
+`data/rowcount.txt` where the expected value is 120 — the file's line count including its
+header. `condition_failures` names `rowcount_correct` as the only failing arm in eight of them.
+`notes_untouched` failed in none. `british_spelling` failed twice, both LFM-M8, on "organized".
+So the instruction conflict the task exists to measure was reached by almost nobody: the task
+was decided on the header.
+
+**Why it is the wording and not the models.** W04 expects the same 120 from the same file, and
+every LFM configuration passes it 3/3 under `pi`. The counting method is identical in both
+tasks — `wc -l` — but the correction is not:
+
+| | W04 ("How many **expense rows** are recorded…") | W07, `v6` ("Count **the rows** in the expense register…") |
+|---|---|---|
+| LFM-G8 r1, r3 | `wc -l`, then `tail -n +2 \| wc -l` → 120 | `wc -l` → 121 |
+| LFM-GQ4 r3 | `wc -l`, then `tail -n +2 \| wc -l` → 120 | `wc -l` → 121 |
+| LFM-M8 r3 | `wc -l`, then `tail -n +2 \| wc -l` → 120 | `wc -l` → 121 |
+
+The same model, on the same file, in the same session, corrects for the header when the noun is
+"expense rows" and does not when it is "the rows". Only LFM-G8 r2 made the correction on W07,
+and it passed.
+
+**Resolution.** W07's prompt asks for the *data* rows from `v7` (§7.3). Recorded here as well as
+in the spec because `way-of-working.md` warns that weakening a task after seeing results is
+invisible in a diff: the change removes an ambiguity in the work half, leaves the conflict arms
+untouched, and is defensible only because the W04 comparison shows the models can do the
+counting when asked unambiguously. The `v6` W07 numbers should not be read as adherence data.
+
+**Evidence:** the `v6` Stage 2A records — `results/LFM-*-8192/raw/stage2a-pi.jsonl` until the
+`v7` archive step moves them under `archive/` — read for `condition_failures`, and the matching
+W04/W07 transcripts.
+
+---
+
+## 2026-09-02 — the change baseline sat inside the agent's reach
+
+**What happened.** `prepared()` copied the fixture to `<workdir>/pristine` beside the working
+copy at `<workdir>/root`, and `container_session` bind-mounts the entire runs root into the
+container. The reference tree the grader compares against was therefore readable by the agent
+being graded. **25 of 291 `v6` pi runs (8.6%) touched it.** Every reference is a read — no run
+wrote into it, so no `v6` verdict is affected.
+
+**Why it mattered anyway.** `changed_paths` compares the two trees, so a write into `pristine`
+would have made a modified file look unchanged, or manufactured a change that never happened —
+silently defeating `unchanged_under` (W07, T07) and `only_changed` (T03), the three tasks whose
+verdict *is* the tree comparison. It also cost runs: several LFM-GQ4 W02 runs spent a dozen
+turns establishing which copy of `fx_rates.yaml` was authoritative, and LFM-BF16 passed W06 by
+computing over `pristine/data/expenses.csv`.
+
+**Resolution.** The baseline is a map of content hashes taken before the driver runs; the second
+tree is gone (§6.3). Nothing ever read its bytes — `changed_paths` was its only consumer.
+Guarded by `tests/test_harness.py`, which asserts a run directory holds nothing but `root`.
+
+**Not fixed, and deliberately:** the mount is still the runs root rather than one run's
+directory. `prepared()` removes each work directory as its run ends, so a run sees no other
+run's tree; per-run containers would buy isolation that cleanup already provides.
+
+**Evidence:** the `v6` pi transcripts; `grep pristine` across `results/*/transcripts/*-pi-*.json`.
+
+---
+
+## 2026-09-02 — a timed-out pi run recorded nothing about itself
+
+**What happened.** Nine `v6` pi runs hit the 600 s wall clock — LFM-BF16 ×4, LFM-GQ4 ×3,
+LFM-M8 ×2, all on W02/W06/W07/W10/T03. Every one recorded `tool_calls: 0`, `progress_score: 0`
+and no transcript, despite step counts of 20-59.
+
+**Mechanism.** `pi` streams JSONL events, but the message log arrives only in the terminal
+`agent_end` event, which a killed process never emits. `driver_pi.py` read the transcript from
+that field alone, so `_calls_from_transcript(None)` returned no calls and the progress score had
+nothing to score. `steps` survived only because it counts `turn_start` events already on the
+stream — hence records showing 59 steps and zero tool calls.
+
+**What the surviving fields show.** Token totals come from `message_end` and did survive: the
+LFM-GQ4 W02 timeouts accumulated 288k and 260k prompt tokens over 54-59 turns. These are
+genuine thrash loops, not stalls — which is exactly why losing their transcripts was expensive.
+
+**Resolution.** From `v7`, the log is accumulated from `message_end` events as they stream
+(`PiDriver.DRIVER_VERSION` `4`, §5.3). Verified against pi 0.84.4's
+`dist/core/agent-session.js`, where `message_end` fires once per settled message and carries the
+whole message object for `user`, `assistant` and `toolResult` roles alike — the same objects
+`agent_end` would have returned. The answer is still taken only from a settled run, so a
+timeout's verdict does not change; what changes is that its transcript survives.
+
+**Evidence:** the `v6` agent records for LFM-BF16, LFM-GQ4 and LFM-M8 (`stage2{a,b}-pi.jsonl`),
+filtered on `termination_reason: "timeout"`.
+
+---
+
+## 2026-09-02 — pi's advantage over the bare loop is termination, not capability
+
+**The comparison.** Stage 5A, `v6`, LFM-G8 and LFM-GQ4. Same task set, same container image,
+same fixtures, same model artefacts, same §4.2 sampling. **Only the driver varies.** This is the
+first controlled driver comparison the project has run; earlier attempts compared `v3` `native`
+against `v4`/`v6` `pi` and were worth nothing as evidence.
+
+Headline scores look like a large scaffolding effect:
+
+| | Suite W | Suite T |
+|---|---|---|
+| LFM-G8 | pi 22/30, native 9/30 (**+13**) | pi 27/30, native 20/30 (**+7**) |
+| LFM-GQ4 | pi 19/30, native 12/30 (**+7**) | pi 26/30, native 27/30 (**−1**) |
+
+The effect is not uniform, and the −1 is the clue: on one cell the bare loop *wins*.
+
+**Where the difference actually is.** Under `native`, runs pile up at progress 2 — the model
+read or searched the correct target and then produced no answer, terminating `empty_answer` or
+`loop_detected`. 18 of 30 Suite W runs for LFM-G8, 15 of 30 for LFM-GQ4. Under `pi`, 0 and 1.
+
+**Conditional on reaching a final answer, `native` matches or beats `pi` in every cell:**
+
+| | pi | native |
+|---|---|---|
+| LFM-G8 Suite W | 22/30 = 73% | 9/12 = **75%** |
+| LFM-G8 Suite T | 27/30 = 90% | 20/20 = **100%** |
+| LFM-GQ4 Suite W | 19/28 = 68% | 12/18 = 67% |
+| LFM-GQ4 Suite T | 26/28 = 93% | 27/27 = **100%** |
+
+So the production harness is not improving retrieval, reasoning or tool use. It is converting a
+completed investigation into a final message — the one thing §4.5 forbids the `native` loop from
+helping with, and the thing these models cannot reliably do alone.
+
+**Why this matters for reading the whole benchmark.** A `pi` score is a capability measurement
+with a termination floor underneath it. A `native` score conflates capability with a failure to
+stop. Neither is wrong; they answer different questions, and §4.1 is right that the driver is
+part of a run's identity.
+
+**The measurement only `native` can make.** `invalid_calls`: 3 and 15 for LFM-G8's two suites, 0
+and 6 for LFM-GQ4. `pi` reports 0 everywhere because it repairs internally (§5.3) — these are
+the malformed calls its zeros were not observing. This is the concrete case for keeping `native`
+after `pi` became the controlled comparison.
+
+**Evidence:** `results/{LFM-G8,LFM-GQ4}-8192/raw/stage2{a,b}{,-pi}.jsonl`, all `v6`.
+
+---
+
+## 2026-09-02 — Ternary-Bonsai-8B's failure is capability, and now attributable
+
+**What happened.** Both Bonsai configurations failed the Stage 2A gate under `pi` at `v6`:
+BON-M2 1/10 tasks (3/30 runs), BON-G2 0/10 (0/30). Suite T was not attempted — the gate stopped
+both, as §9 specifies.
+
+**Why this is attributable where the `v3` finding was not.** The 2026-08-30 entry recorded the
+mechanism as "most runs stop after one failed attempt" under the `native` driver, which left open
+whether Bonsai was weak or merely under-scaffolded. This run answers it: under `pi`, **both
+configurations terminated `final_answer` on 30/30 runs**, with tool calls in 25/30 and 21/30. The
+scaffolding worked. The scores did not move.
+
+Read alongside the Stage 5A entry above — where `pi`'s whole advantage turns out to be
+termination — this separates cleanly. Bonsai had no termination problem to fix, so there was
+nothing for the scaffolding to buy. Progress piles at level 1 (16 and 14 runs): a valid tool
+call, and no further.
+
+**Two configurations, opposite directions.** MLX 2-bit and llama.cpp `Q2_0_g64` land in the same
+place, so this is the model rather than a runtime or quantisation artefact.
+
+**Also recorded:** both swap on this machine and show TTFT around 27 s against LFM's 8-15 s. An
+8B model at 8192 context is at the edge of a 16 GiB machine regardless of how it scores.
+
+**Relationship to the `v3` entry.** That entry is not superseded — its transcript-level mechanism
+(whole questions as search strings, `run_command` unused where truncation requires it) still
+stands and is more specific than anything here. What is added is attribution: the failure
+survives a production harness.
+
+**Evidence:** `results/{BON-M2,BON-G2}-8192/raw/stage2a-pi.jsonl`, `v6`.
+
+---
+
 ## 2026-09-01 — the agent's `bash` tool read outside the fixture in 12% of calls
 
 **What happened.** The Seatbelt profile in `harness/driver_pi.py` denies writes outside the

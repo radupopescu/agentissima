@@ -12,6 +12,7 @@ from harness.driver_pi import (
     ISOLATION_FLAGS,
     PiDriver,
     _calls_from_transcript,
+    _outcome_from_output,
 )
 from harness.sandbox import Sandbox
 from harness.scoring import touched_target
@@ -111,6 +112,79 @@ def test_a_grep_result_surfaces_a_target_the_call_did_not_name():
     calls = _calls_from_transcript(_transcript())
     outcome = RunOutcome(task_id="W05", root=None, answer="", calls=calls)
     assert touched_target(outcome, ("notes/finance.md",)) is True
+
+
+# --- a run the wall clock killed --------------------------------------------
+#
+# `agent_end` carries the whole message log and never arrives for a killed
+# process, so a timed-out run used to record an empty transcript, no calls and
+# progress 0 however far it had got (`DRIVER_VERSION` "4").
+
+
+def _stream(*, with_agent_end: bool) -> str:
+    """pi's `--mode json` stdout: one JSON object per line."""
+    lines = [{"type": "agent_start"}]
+    for message in _transcript():
+        lines.append({"type": "turn_start"})
+        lines.append({"type": "message_end", "message": message})
+    if with_agent_end:
+        lines.append({"type": "agent_end", "messages": _transcript()})
+    return "\n".join(json.dumps(line) for line in lines) + "\n"
+
+
+def _killed_outcome(sandbox):
+    return _outcome_from_output(
+        _task(None), sandbox, _stream(with_agent_end=False), timed_out=True
+    )
+
+
+def test_a_timed_out_run_keeps_the_calls_it_made(tmp_path):
+    sandbox = Sandbox(tmp_path, "workspace")
+    outcome = _killed_outcome(sandbox)
+    assert [call.name for call in outcome.calls] == ["read", "grep"]
+
+
+def test_a_timed_out_run_keeps_its_transcript(tmp_path):
+    """The transcript is the only record of what the most expensive failures
+    in a campaign actually did."""
+    sandbox = Sandbox(tmp_path, "workspace")
+    assert _killed_outcome(sandbox).transcript == _transcript()
+
+
+def test_a_timed_out_run_still_answers_nothing(tmp_path):
+    """A killed run's last assistant message is a mid-investigation remark.
+    Grading it as an answer would credit work the model never concluded."""
+    sandbox = Sandbox(tmp_path, "workspace")
+    outcome = _killed_outcome(sandbox)
+    assert outcome.answer == ""
+    assert outcome.termination_reason == "timeout"
+
+
+def test_agent_end_still_wins_when_it_arrives(tmp_path):
+    sandbox = Sandbox(tmp_path, "workspace")
+    outcome = _outcome_from_output(
+        _task(None), sandbox, _stream(with_agent_end=True), timed_out=False
+    )
+    assert outcome.transcript == _transcript()
+    assert outcome.answer == "done"
+    assert outcome.termination_reason == "final_answer"
+
+
+def test_extension_output_is_not_mistaken_for_conversation(tmp_path):
+    """`message_end` also fires for `custom` messages, which `agent_end` does
+    not carry. Including them would put extension output in the log."""
+    stream = json.dumps(
+        {"type": "message_end", "message": {"role": "custom", "content": []}}
+    )
+    sandbox = Sandbox(tmp_path, "workspace")
+    outcome = _outcome_from_output(_task(None), sandbox, stream, timed_out=True)
+    assert outcome.transcript is None
+
+
+def test_a_crash_before_any_message_is_still_a_server_error(tmp_path):
+    sandbox = Sandbox(tmp_path, "workspace")
+    outcome = _outcome_from_output(_task(None), sandbox, "", timed_out=False)
+    assert outcome.termination_reason == "server_error"
 
 
 # --- the invocation ----------------------------------------------------------

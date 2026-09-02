@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .execution import Executor
 from .paths import ensure_runs_root
-from .sandbox import Sandbox
+from .sandbox import Sandbox, tree_hashes
 from .scoring import progress_score
 from .types import Ctx, RunOutcome, Task, load_expected
 
@@ -48,10 +48,12 @@ class Graded:
 
 @contextmanager
 def prepared(task: Task, executor: Executor | None = None):
-    """Yield a sandbox on a fresh fixture copy, plus a pristine reference copy.
+    """Yield a sandbox on a fresh fixture copy, plus that copy's baseline hashes.
 
-    The pristine snapshot is taken *after* any fixture variant is applied, so a
-    variant's own files never register as a change made by the agent.
+    The baseline is taken *after* any fixture variant is applied, so a
+    variant's own files never register as a change made by the agent. It is a
+    hash map rather than a second copy of the tree: `Ctx.baseline` explains
+    why a copy inside the work directory was the wrong shape.
     """
     workdir = Path(
         tempfile.mkdtemp(dir=ensure_runs_root(), prefix=f"llmbench-{task.id}-")
@@ -62,10 +64,7 @@ def prepared(task: Task, executor: Executor | None = None):
         if task.variant is not None:
             task.variant(root)
 
-        pristine = workdir / "pristine"
-        shutil.copytree(root, pristine)
-
-        yield Sandbox(root, task.fixture, executor), pristine
+        yield Sandbox(root, task.fixture, executor), tree_hashes(root)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -85,10 +84,12 @@ def condition_failures(task: Task, ctx: Ctx) -> tuple[str, ...] | None:
     return tuple(name for name, held in task.conditions(ctx).items() if not held)
 
 
-def grade(task: Task, sandbox: Sandbox, pristine: Path, outcome: RunOutcome) -> tuple[bool, int, Ctx]:
+def grade(
+    task: Task, sandbox: Sandbox, baseline: dict[str, str], outcome: RunOutcome
+) -> tuple[bool, int, Ctx]:
     ctx = Ctx(
         root=sandbox.root,
-        pristine=pristine,
+        baseline=baseline,
         answer=outcome.answer,
         calls=outcome.calls,
         expected=load_expected(task.id),
@@ -110,10 +111,10 @@ def run_task(task: Task, driver: Driver, *, executor: Executor | None = None) ->
     want. `Driver` itself is unchanged -- a driver that needs the executor
     reads `sandbox.executor`."""
     started = time.monotonic()
-    with prepared(task, executor) as (sandbox, pristine):
+    with prepared(task, executor) as (sandbox, baseline):
         outcome = driver(task, sandbox)
         outcome.path_errors = sandbox.path_errors
-        passed, progress, ctx = grade(task, sandbox, pristine, outcome)
+        passed, progress, ctx = grade(task, sandbox, baseline, outcome)
         failures = condition_failures(task, ctx)
         elapsed = time.monotonic() - started
 

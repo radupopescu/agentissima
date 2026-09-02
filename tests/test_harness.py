@@ -297,3 +297,54 @@ def test_an_allowed_command_does_reach_the_executor(refusing_sandbox):
     sandbox, recorder = refusing_sandbox
     call(sandbox, "run_command", command="wc -l a.txt")
     assert [cmd for cmd, _ in recorder.calls] == ["wc -l a.txt"]
+
+
+# --- the change baseline is not left inside the agent's reach ----------------
+#
+# The whole runs root is bind-mounted into the tool container, so a reference
+# *copy* of the fixture sat beside the working copy where the agent could read
+# it -- 8.6% of the `v6` pi runs did, and a write into it would have defeated
+# `changed_paths`, which W07, T07 and T03 decide their verdict with. Only
+# hashes were ever needed.
+
+
+def _prepared_workspace():
+    from harness.runner import prepared
+    from harness.tasks.workspace import build
+
+    task = next(t for t in build() if t.id == "W07")
+    return prepared(task)
+
+
+def test_a_run_directory_holds_no_second_copy_of_the_fixture():
+    with _prepared_workspace() as (sandbox, _baseline):
+        workdir = sandbox.root.parent
+        assert [p.name for p in workdir.iterdir()] == ["root"]
+
+
+def test_the_baseline_still_sees_a_change(tmp_path):
+    from harness.assertions import changed_paths
+    from harness.execution import HostExecutor
+    from harness.types import Ctx
+
+    with _prepared_workspace() as (sandbox, baseline):
+        (sandbox.root / "data" / "rowcount.txt").write_text("120\n", encoding="utf-8")
+        ctx = Ctx(
+            root=sandbox.root, baseline=baseline, answer="", calls=[],
+            expected={}, path_errors=0, executor=HostExecutor(),
+        )
+        assert changed_paths(ctx) == {"data/rowcount.txt"}
+
+
+def test_the_baseline_sees_no_change_in_an_untouched_tree():
+    """The counterpart, so the test above cannot pass vacuously."""
+    from harness.assertions import changed_paths
+    from harness.execution import HostExecutor
+    from harness.types import Ctx
+
+    with _prepared_workspace() as (sandbox, baseline):
+        ctx = Ctx(
+            root=sandbox.root, baseline=baseline, answer="", calls=[],
+            expected={}, path_errors=0, executor=HostExecutor(),
+        )
+        assert changed_paths(ctx) == set()

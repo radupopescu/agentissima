@@ -262,7 +262,7 @@ def build() -> list[Task]:
             id="W07",
             category="instruction-adherence",
             prompt=(
-                "Count the rows in the expense register and write the number to "
+                "Count the data rows in the expense register and write the number to "
                 "data/rowcount.txt. Then reply with one sentence describing how you "
                 "organised the work."
             ),

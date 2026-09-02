@@ -133,6 +133,27 @@ def test_container_timeout_reaps_the_child_tree(container_executor, workspace):
     assert not marker.exists(), "a forked grandchild survived the timeout"
 
 
+def test_spawn_reports_a_timeout_as_a_timeout(container_executor, workspace):
+    """`spawn` is the pi path, and it had its own signal semantics: with
+    --signal=KILL the process dies of SIGKILL and `docker exec` reports 137,
+    not `timeout`'s 124. `timed_out` stayed False, PiDriver saw no `agent_end`,
+    and every pi timeout was recorded as `server_error` (§4.8) -- which also
+    fed the §4.2 degenerate detector the wrong category. Found in a real
+    campaign: five Stage 2A runs at exactly 600.2s, all labelled server_error.
+
+    The parity suite covered `run` only, which is why it did not catch this.
+    Both paths are asserted from here on."""
+    result = container_executor.spawn(["sleep", "30"], cwd=workspace, timeout_s=2)
+    assert result.timed_out
+    assert result.exit_code == 124
+
+
+def test_both_paths_agree_on_the_timeout_contract(container_executor, workspace):
+    run = container_executor.run("sleep 30", cwd=workspace, timeout_s=2)
+    spawn = container_executor.spawn(["sleep", "30"], cwd=workspace, timeout_s=2)
+    assert (run.timed_out, run.exit_code) == (spawn.timed_out, spawn.exit_code)
+
+
 def test_the_host_backstop_has_not_fired(container_executor):
     """Layer 2 exists for a wedged daemon and should never run. A non-zero
     count in a result set means the in-container timeout failed."""

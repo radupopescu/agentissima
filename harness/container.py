@@ -5,9 +5,15 @@ see only the run's fixture copy. This replaces a macOS Seatbelt profile that
 confined writes but permitted all reads -- a gap real `v4` data exercised in
 12% of `bash` calls (findings.md).
 
-One container per *stage*, not per run: runs are already isolated from each
-other by a fresh fixture copy and the pristine-tree comparison, so a container
-per run would buy nothing and pay 0.3 s each time.
+One container per *stage*, not per run: each run gets a fresh fixture copy and
+`prepared()` removes that work directory as the run ends, so a run never sees
+another run's tree. A container per run would buy nothing and pay 0.3 s each
+time.
+
+The mount is the whole runs root, so anything placed there is inside the
+agent's reach. That is why the change baseline is a hash map and not a second
+copy of the fixture (§6.3) -- as a copy, it was read by 8.6% of the `v6` pi
+runs and could have been written to.
 """
 
 from __future__ import annotations
@@ -157,9 +163,17 @@ class ContainerExecutor:
         env_flags: list[str] = []
         for key, value in (env or {}).items():
             env_flags += ["-e", f"{key}={value}"]
+        # TERM, not KILL, and for a reason that cost a mislabelled campaign:
+        # with --signal=KILL the process dies of SIGKILL and `docker exec`
+        # reports 137, not `timeout`'s own 124. Every pi timeout was then
+        # recorded as `server_error` (§4.8) rather than `timeout`, which also
+        # fed the §4.2 degenerate detector the wrong category. Using TERM keeps
+        # 124 the unambiguous timeout code and leaves 137 meaning what it
+        # should -- killed by something else, an OOM against --memory most
+        # likely. --kill-after still guarantees death if pi ignores TERM.
         docker_argv = [
             "exec", "-w", str(self._container_path(cwd)), *env_flags, self.container_id,
-            "timeout", "--kill-after=5", "--signal=KILL", f"{timeout_s:g}",
+            "timeout", "--kill-after=5", "--signal=TERM", f"{timeout_s:g}",
             *argv,
         ]
         return self._exec(docker_argv, timeout_s, marker)

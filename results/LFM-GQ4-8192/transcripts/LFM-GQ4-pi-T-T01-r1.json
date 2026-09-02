@@ -1,0 +1,177 @@
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "Where is the default rounding mode for monetary amounts defined, and what is it?"
+      }
+    ],
+    "timestamp": 1788316681839
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "thinking",
+        "thinking": "The user wants to know about the default rounding mode for monetary amounts. This sounds like a question about some codebase - possibly related to pi's configuration or settings. Let me search for relevant files that might contain information about monetary rounding modes.\n\nI should first explore the project structure and then search for keywords related to \"rounding\", \"monetary\", \"money\", etc.",
+        "thinkingSignature": "reasoning_content"
+      },
+      {
+        "type": "toolCall",
+        "id": "308029356",
+        "name": "grep",
+        "arguments": {
+          "pattern": "rounding",
+          "path": "/runs/llmbench-T01-f77hk7kl/root"
+        }
+      },
+      {
+        "type": "toolCall",
+        "id": "864706771",
+        "name": "grep",
+        "arguments": {
+          "pattern": "monetary",
+          "path": "/runs/llmbench-T01-f77hk7kl/root"
+        }
+      }
+    ],
+    "api": "openai-completions",
+    "provider": "lmstudio",
+    "model": "bench",
+    "usage": {
+      "input": 2071,
+      "output": 133,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 75,
+      "totalTokens": 2204,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "stopReason": "toolUse",
+    "timestamp": 1788316681852,
+    "responseId": "chatcmpl-awk47x3zzd6c2t3wizwlgj",
+    "rawStopReason": "tool_calls"
+  },
+  {
+    "role": "toolResult",
+    "toolCallId": "308029356",
+    "toolName": "grep",
+    "content": [
+      {
+        "type": "text",
+        "text": "README.md:8: - `src/ledger/currency.py` \u2014 rounding and quantisation\ndocs/changelog.md:10: - Centralised rounding in `currency.quantise`.\ndocs/architecture.md:5: 1. `currency` \u2014 rounding primitives. Depends on nothing else.\ndocs/architecture.md:15: Monetary rounding is centralised in `currency.quantise`; no other module may\ndocs/architecture.md:16: choose its own rounding mode.\nsrc/ledger/currency.py:3: All monetary rounding in this package goes through :func:`quantise`. The\nsrc/ledger/currency.py:4: rounding mode is fixed here and must not be overridden per call site.\nsrc/ledger/currency.py:9: #: The rounding mode used for every monetary amount in this package.\nsrc/ledger/currency.py:19:     return Decimal(amount).quantize(exponent, rounding=DEFAULT_ROUNDING)\ntests/test_currency.py:10: def test_rounding_mode_is_half_even():\nsrc/ledger/posting.py:13:     The returned shares must sum exactly to ``total``. Any rounding remainder"
+      }
+    ],
+    "isError": false,
+    "timestamp": 1788316686086
+  },
+  {
+    "role": "toolResult",
+    "toolCallId": "864706771",
+    "toolName": "grep",
+    "content": [
+      {
+        "type": "text",
+        "text": "src/ledger/currency.py:1: \"\"\"Rounding and quantisation for monetary amounts.\nsrc/ledger/currency.py:3: All monetary rounding in this package goes through :func:`quantise`. The\nsrc/ledger/currency.py:9: #: The rounding mode used for every monetary amount in this package.\nsrc/ledger/currency.py:12: #: Default number of decimal places for monetary amounts."
+      }
+    ],
+    "isError": false,
+    "timestamp": 1788316686086
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "thinking",
+        "thinking": "The search results show that the default rounding mode for monetary amounts is defined in `src/ledger/currency.py`. Let me read this file to find the exact definition of `DEFAULT_ROUNDING`.",
+        "thinkingSignature": "reasoning_content"
+      },
+      {
+        "type": "toolCall",
+        "id": "482506794",
+        "name": "read",
+        "arguments": {
+          "path": "/runs/llmbench-T01-f77hk7kl/root/src/ledger/currency.py"
+        }
+      }
+    ],
+    "api": "openai-completions",
+    "provider": "lmstudio",
+    "model": "bench",
+    "usage": {
+      "input": 2564,
+      "output": 74,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 41,
+      "totalTokens": 2638,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "stopReason": "toolUse",
+    "timestamp": 1788316686087,
+    "responseId": "chatcmpl-ffn0i7gg504qbgl54fss1",
+    "rawStopReason": "tool_calls"
+  },
+  {
+    "role": "toolResult",
+    "toolCallId": "482506794",
+    "toolName": "read",
+    "content": [
+      {
+        "type": "text",
+        "text": "\"\"\"Rounding and quantisation for monetary amounts.\n\nAll monetary rounding in this package goes through :func:`quantise`. The\nrounding mode is fixed here and must not be overridden per call site.\n\"\"\"\n\nfrom decimal import ROUND_HALF_EVEN, Decimal\n\n#: The rounding mode used for every monetary amount in this package.\nDEFAULT_ROUNDING = ROUND_HALF_EVEN\n\n#: Default number of decimal places for monetary amounts.\nDEFAULT_PLACES = 2\n\n\ndef quantise(amount: Decimal, places: int = DEFAULT_PLACES) -> Decimal:\n    \"\"\"Round ``amount`` to ``places`` decimal places using DEFAULT_ROUNDING.\"\"\"\n    exponent = Decimal(1).scaleb(-places)\n    return Decimal(amount).quantize(exponent, rounding=DEFAULT_ROUNDING)\n"
+      }
+    ],
+    "isError": false,
+    "timestamp": 1788316687492
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "thinking",
+        "thinking": "The file `src/ledger/currency.py` defines the default rounding mode as `ROUND_HALF_EVEN`. This is the IEEE 754 \"round half to even\" (banker's rounding) mode.\n\nLet me also check the documentation to confirm this information. The docs already mention it: \"Monetary rounding is centralised in `currency.quantise`\" and there's a test called `test_rounding_mode_is_half_even`.\n\nThe answer is clear: the default rounding mode for monetary amounts is `ROUND_HALF_EVEN` (round half to even, also known as banker's rounding). This is defined in `src/ledger/currency.py` at line 9.",
+        "thinkingSignature": "reasoning_content"
+      },
+      {
+        "type": "text",
+        "text": "The default rounding mode for monetary amounts is **`ROUND_HALF_EVEN`** (IEEE 754 \"round half to even\" or \"banker's rounding\").\n\nThis is defined in `src/ledger/currency.py` as:\n\n```python\nDEFAULT_ROUNDING = ROUND_HALF_EVEN\n```\n\nThe `quantise()` function uses this default when rounding monetary amounts, and the documentation confirms that \"Monetary rounding is centralised in `currency.quantise`\" with no other modules allowed to choose their own rounding mode."
+      }
+    ],
+    "api": "openai-completions",
+    "provider": "lmstudio",
+    "model": "bench",
+    "usage": {
+      "input": 2828,
+      "output": 269,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 150,
+      "totalTokens": 3097,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "stopReason": "stop",
+    "timestamp": 1788316687493,
+    "responseId": "chatcmpl-1f61ytq4v730iusu9xe919q",
+    "rawStopReason": "stop"
+  }
+]

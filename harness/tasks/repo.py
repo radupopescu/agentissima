@@ -32,6 +32,18 @@ inside the working directory:
 
 PY_PATH = r"[\w./-]+\.py"
 
+# T05: `validation.py` defines `ValidationError` and never raises it, so a
+# model that names the four raisers and then says so has answered better than
+# one that stays silent — and must not be failed for the extra filename. This
+# is the counterpart of W01's superseded-figure allowance (§7.1). Four `v6`
+# runs, one per LFM configuration, failed on exactly this disclaimer.
+NOT_RAISED = re.compile(
+    r"(?:does\s+not|doesn'?t|never|not)\s+(?:itself\s+)?raise|"
+    r"only\s+defines|"
+    r"defines\b[^.]{0,60}\bbut\b",
+    re.IGNORECASE,
+)
+
 
 def _mentions_py(ctx: Ctx) -> bool:
     return bool(re.search(PY_PATH, ctx.answer))
@@ -50,6 +62,15 @@ def _check_t01(ctx: Ctx) -> bool:
 
 
 def _check_t02(ctx: Ctx) -> bool:
+    """The filename is required, and the prompt asks for it explicitly.
+
+    Requiring it while the prompt asked only for a cause failed two `v6` runs
+    that diagnosed the bug correctly but named only `split_amount` in their
+    final message. Dropping the requirement instead was rejected: "float
+    rounding" is a plausible guess about a splitting function, so an answer
+    that never locates the fault is not evidence the model investigated —
+    which is what §8's negative control exists to catch.
+    """
     if changed_paths(ctx):
         return False
     if not mentions(ctx.answer, ctx.expected["file"]):
@@ -84,7 +105,25 @@ def _shape_t04(ctx: Ctx) -> bool:
 
 
 def _check_t05(ctx: Ctx) -> bool:
-    return filenames_in(ctx.answer, PY_PATH) == set(ctx.expected["files"])
+    wanted = set(ctx.expected["files"])
+    found = filenames_in(ctx.answer, PY_PATH)
+    if wanted - found:
+        return False
+    return all(_named_as_not_raising(ctx.answer, name) for name in found - wanted)
+
+
+def _named_as_not_raising(answer: str, filename: str) -> bool:
+    """True when the answer names this file *and* says it does not raise.
+
+    The marker is looked for beside the filename rather than anywhere in the
+    answer — unlike W01, where one superseded figure is being excused and the
+    scope is unambiguous. Here an answer could list several extra files and
+    disclaim only one, and a whole-answer search would pass it.
+    """
+    return any(
+        filename in line and NOT_RAISED.search(line)
+        for line in answer.splitlines()
+    )
 
 
 # --- T06 multi-hop ----------------------------------------------------------
@@ -194,7 +233,8 @@ def build() -> list[Task]:
             category="investigation",
             prompt=(
                 "The test tests/test_posting.py::test_split_posting_balances fails. "
-                "Explain what causes it. Do not change any file."
+                "Explain what causes it and name the file the fault is in. "
+                "Do not change any file."
             ),
             target_paths=("src/ledger/posting.py",),
             check=_check_t02,

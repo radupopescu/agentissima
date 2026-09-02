@@ -53,8 +53,8 @@ def no_us_spelling(text: str) -> bool:
 
 
 def changed_paths(ctx: Ctx) -> set[str]:
-    """Relative paths that differ from the pristine fixture."""
-    before = tree_hashes(ctx.pristine)
+    """Relative paths that differ from the fixture as the run started."""
+    before = ctx.baseline
     after = tree_hashes(ctx.root)
     return {
         path

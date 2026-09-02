@@ -50,6 +50,12 @@ WALL_CLOCK_LIMIT_S = 600.0  # matches NativeDriver's default
 # §11: any change to the invocation, the seatbelt profile, or the containment
 # story bumps this.
 #
+# "4": a run's message log is assembled from the `message_end` events as they
+# stream, instead of only from the terminal `agent_end`. A killed process
+# never emits `agent_end`, so every timed-out run recorded an empty
+# transcript, `tool_calls: 0` and `progress_score: 0` however far it had got
+# — nine runs in `v6`, one of them 59 turns and 288k prompt tokens deep.
+#
 # "3": pi now runs inside the §4.6 container instead of on the host under a
 # Seatbelt profile. Its tool surface is the pinned Linux image, and reads
 # outside the fixture are impossible rather than merely discouraged.
@@ -59,7 +65,7 @@ WALL_CLOCK_LIMIT_S = 600.0  # matches NativeDriver's default
 # contradicting AGENTS.md), the four discovery flags below isolate ambient
 # machine state, and `RunOutcome.calls` is reconstructed from pi's event
 # stream so the progress score works.
-DRIVER_VERSION = "3"
+DRIVER_VERSION = "4"
 
 # Ambient state must not leak into a run. `PI_CODING_AGENT_DIR` already
 # isolates pi's *global* discovery slot, but project-local discovery resolves
@@ -193,11 +199,17 @@ def _outcome_from_output(
     steps = sum(1 for event in events if event.get("type") == "turn_start")
     agent_end = next((e for e in reversed(events) if e.get("type") == "agent_end"), None)
 
-    answer = ""
-    transcript = None
-    if agent_end is not None:
-        transcript = agent_end.get("messages")
-        answer = _final_answer_text(transcript)
+    # `agent_end` carries the whole log and is authoritative when it arrives.
+    # It never arrives for a run the wall clock kills, which is why the
+    # streamed reconstruction exists (see DRIVER_VERSION "4").
+    transcript = agent_end.get("messages") if agent_end is not None else None
+    if not transcript:
+        transcript = _transcript_from_events(events) or None
+
+    # The answer is read only from a run that settled. A timed-out run's last
+    # assistant message is a mid-investigation remark, not an answer, and
+    # grading it as one would credit work the model never concluded.
+    answer = _final_answer_text(transcript) if agent_end is not None else ""
 
     if timed_out:
         termination = "timeout"
@@ -219,6 +231,31 @@ def _outcome_from_output(
         metrics=_metrics_from_events(events),
         transcript=transcript,
     )
+
+
+def _transcript_from_events(events: list[dict]) -> list[dict]:
+    """The message log, assembled from the stream rather than from `agent_end`.
+
+    `message_end` fires once per settled message and carries the whole message
+    object — read from pi 0.84.4's `dist/core/agent-session.js`, where the same
+    event drives session persistence for `user`, `assistant` and `toolResult`
+    roles alike. So the list this returns is the same shape `agent_end` would
+    have given, short by any message still in flight when the process died.
+
+    `custom` messages (extension output) are excluded: they are not part of the
+    model's conversation and `agent_end` does not carry them.
+    """
+    transcript: list[dict] = []
+    for event in events:
+        if event.get("type") != "message_end":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") not in ("user", "assistant", "toolResult"):
+            continue
+        transcript.append(message)
+    return transcript
 
 
 # pi names a path argument `path` on every path-taking tool (read, write,

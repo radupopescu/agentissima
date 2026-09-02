@@ -28,7 +28,13 @@ class Ctx:
     """
 
     root: Path
-    pristine: Path
+    # Content hashes of the fixture tree as it stood before the agent ran, by
+    # relative path (§4.6). A copy of the tree was tried and rejected: the
+    # whole runs root is bind-mounted into the tool container, so a sibling
+    # `pristine/` directory sat inside the agent's reach -- 8.6% of the `v6`
+    # pi runs read from it, and a write into it would have defeated the very
+    # comparison it exists for. Nothing ever needed the bytes.
+    baseline: dict[str, str]
     answer: str
     calls: list[ToolCall]
     expected: dict
