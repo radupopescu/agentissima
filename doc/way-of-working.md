@@ -86,6 +86,7 @@ Changing one of these changes what the benchmark measures.
 | The oracle solves through the tool surface, never by reading expected values | `harness/oracle.py` | Otherwise 20/20 proves only that the values exist on disk (§8) |
 | The system prompt is fixed, with no per-model adaptation | `harness/prompt.py` | §4.3 |
 | Fixture variants are applied before the change baseline is taken | `harness/runner.py` | Otherwise a variant's own files count as changes made by the agent (§6.3) |
+| The work directory around a run's fixture copy is sealed while the run is in progress | `harness/runner.py` | The container mounts the whole runs root as this uid, so an unsealed parent lets a misdirected write succeed silently — and grading, which reads `root/`, never sees it (§4.6) |
 | The change baseline is hashes, never a copy of the tree inside the run directory | `harness/runner.py`, `harness/types.py` | The runs root is mounted into the container, so a reference copy is readable — and writable — by the agent it exists to judge (§6.3) |
 | Timing terms are defined against specific observables | `benchmark.md` §5 | Two implementations must agree. Do not redefine TTFT casually |
 

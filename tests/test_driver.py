@@ -515,7 +515,12 @@ def test_t05_accepts_naming_the_non_raiser_as_a_non_raiser(tmp_path):
     """`validation.py` defines `ValidationError` and never raises it. An answer
     that names the four raisers and says so is better than one that stays
     silent, and must not fail for the extra filename — W01's allowance, applied
-    to a set-equality assertion. Five `v6` runs failed on exactly this."""
+    to a set-equality assertion.
+
+    The cases below are the phrasings real runs produced across `v6` and `v7`.
+    The attributive one defeated the first version of this allowance, which
+    enumerated disclaimers instead of asking whether a mention claims the file
+    raises."""
     from harness.execution import HostExecutor
     from harness.tasks.repo import _check_t05
     from harness.types import Ctx
@@ -528,22 +533,52 @@ def test_t05_accepts_naming_the_non_raiser_as_a_non_raiser(tmp_path):
     four = "entries.py, export_csv.py, file_store.py, posting.py"
 
     assert _check_t05(ctx(f"They are {four}."))
+    # Negated raising, the `v6` shape.
     assert _check_t05(ctx(
         f"They are {four}.\nledger/validation.py defines the class but does not raise it."
     ))
     assert _check_t05(ctx(f"They are {four}.\nvalidation.py only defines the class."))
-    # An undisclaimed extra name is still a false positive.
-    assert not _check_t05(ctx(f"They are {four}, validation.py."))
-    # A disclaimer somewhere else in the answer does not excuse it: an answer
-    # may list several extra files and disclaim only one.
-    assert not _check_t05(ctx(
-        f"They are {four}, validation.py and currency.py.\n"
-        "currency.py does not raise it."
+    # Named as the definition site, the `v7` shape that broke the first version.
+    assert _check_t05(ctx(
+        f"They are {four}.\n"
+        "These modules use and raise the ValidationError class defined in validation.py."
     ))
+    # An undisclaimed extra name is a false positive.
+    assert not _check_t05(ctx(f"They are {four}, validation.py."))
+    assert not _check_t05(ctx(f"They are {four}.\nvalidation.py raises ValidationError."))
     # Missing one of the four fails regardless of any disclaimer.
     assert not _check_t05(ctx(
         "They are entries.py, export_csv.py, file_store.py.\n"
         "validation.py does not raise it."
+    ))
+
+
+def test_t05_requires_every_mention_to_be_qualified(tmp_path):
+    """Not merely one of them. An answer that lists a file among the raisers
+    and qualifies it only somewhere else has still made the false claim — and a
+    whole-answer search would let several extra names ride on one disclaimer."""
+    from harness.execution import HostExecutor
+    from harness.tasks.repo import _check_t05
+    from harness.types import Ctx
+
+    expected = {"files": ["entries.py", "export_csv.py", "file_store.py", "posting.py"]}
+    ctx = lambda answer: Ctx(  # noqa: E731
+        root=tmp_path, baseline={}, answer=answer, calls=[],
+        expected=expected, path_errors=0, executor=HostExecutor(),
+    )
+    four = "entries.py, export_csv.py, file_store.py, posting.py"
+
+    assert not _check_t05(ctx(
+        f"- validation.py\nThey are {four}.\nValidationError is defined in validation.py."
+    ))
+    # Two extra names, one disclaimer between them.
+    assert not _check_t05(ctx(
+        f"They are {four}, validation.py and currency.py.\n"
+        "currency.py does not raise it."
+    ))
+    # Claim and qualification in one line is how real answers write it.
+    assert _check_t05(ctx(
+        f"They are {four} and validation.py, though validation.py only defines the class."
     ))
 
 

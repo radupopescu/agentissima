@@ -35,12 +35,24 @@ PY_PATH = r"[\w./-]+\.py"
 # T05: `validation.py` defines `ValidationError` and never raises it, so a
 # model that names the four raisers and then says so has answered better than
 # one that stays silent — and must not be failed for the extra filename. This
-# is the counterpart of W01's superseded-figure allowance (§7.1). Four `v6`
-# runs, one per LFM configuration, failed on exactly this disclaimer.
-NOT_RAISED = re.compile(
-    r"(?:does\s+not|doesn'?t|never|not)\s+(?:itself\s+)?raise|"
-    r"only\s+defines|"
-    r"defines\b[^.]{0,60}\bbut\b",
+# is the counterpart of W01's superseded-figure allowance (§7.1).
+#
+# The first version of this allowance enumerated the disclaiming phrasings the
+# `v6` answers happened to use ("defines the class but does not raise it") and
+# was immediately defeated by one that named the same file attributively:
+# "modules that use and raise the `ValidationError` class defined in
+# `ledger/validation.py`". Enumerating phrasings does not converge — there is
+# always another way to say it.
+#
+# So the question asked here is not "did the answer excuse this name" but
+# "does this mention claim the file raises". Two cues say it does not: the
+# raising is negated, or the file is named as where the class is *defined*.
+# Everything else — a bare listing among the raisers, most of all — is a
+# claim, and a false one.
+NOT_A_RAISER = re.compile(
+    r"(?:does\s+not|doesn'?t|do\s+not|never|not|no)\s+(?:itself\s+)?rais|"
+    r"\bonly\s+defin|"
+    r"\bdefin(?:e|es|ed|ing|ition)\b",
     re.IGNORECASE,
 )
 
@@ -109,21 +121,21 @@ def _check_t05(ctx: Ctx) -> bool:
     found = filenames_in(ctx.answer, PY_PATH)
     if wanted - found:
         return False
-    return all(_named_as_not_raising(ctx.answer, name) for name in found - wanted)
+    return all(_never_claimed_to_raise(ctx.answer, name) for name in found - wanted)
 
 
-def _named_as_not_raising(answer: str, filename: str) -> bool:
-    """True when the answer names this file *and* says it does not raise.
+def _never_claimed_to_raise(answer: str, filename: str) -> bool:
+    """True when no mention of this file claims that it raises.
 
-    The marker is looked for beside the filename rather than anywhere in the
-    answer — unlike W01, where one superseded figure is being excused and the
-    scope is unambiguous. Here an answer could list several extra files and
-    disclaim only one, and a whole-answer search would pass it.
+    *Every* mention must carry one of the `NOT_A_RAISER` cues, not merely one
+    of them: an answer that lists a file among the raisers and elsewhere notes
+    where the class is defined has still made the false claim. The scope is the
+    line, which is where these answers put the qualification — unlike W01,
+    where a single known decoy is being excused and the whole answer is the
+    natural scope.
     """
-    return any(
-        filename in line and NOT_RAISED.search(line)
-        for line in answer.splitlines()
-    )
+    mentions = [line for line in answer.splitlines() if filename in line]
+    return bool(mentions) and all(NOT_A_RAISER.search(line) for line in mentions)
 
 
 # --- T06 multi-hop ----------------------------------------------------------

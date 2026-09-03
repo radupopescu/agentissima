@@ -1,9 +1,10 @@
 # Local LLM Agent Benchmark
 
-**Task set version:** `v7`. See §11 for what invalidates results.
+**Task set version:** `v8`. See §11 for what invalidates results.
 
 | Version | Change |
 |---|---|
+| `v8` | The two defects the `v7` campaign exposed, fixed. **The work directory around each run's fixture copy is sealed** (mode `0555`) for the duration of the run, so a write beside `root/` returns `Permission denied` instead of silently succeeding — two `v7` W07 runs computed the right answer and were failed for writing it one directory up (§4.6). **T05's extra-filename allowance** no longer enumerates disclaiming phrasings: it asks whether each mention claims the file raises, which an attributive phrasing defeated at `v7` (§7.2). Neither driver's own version changes — the seal is in `runner.py` and applies to both equally — but §11 lists the sandbox and an assertion among the triggers |
 | `v7` | Five changes, batched into one bump because each forces one on its own. **W07's prompt** now asks for the *data* rows rather than "the rows": `v6` showed the same models correcting for the header on W04 and not on W07, so the arithmetic convention was masking the instruction-adherence measurement the task exists for (§7.3). **The change baseline** is a hash map taken before the run instead of a copy of the fixture beside the working one, which the agent could read (§4.6). **`PiDriver.DRIVER_VERSION` bumped to `4`**: a run's message log is assembled from the streamed `message_end` events, so a run the wall clock kills keeps its transcript, calls and progress score (§5.3). **T05** accepts an extra filename that the answer explicitly says does not raise, the counterpart of W01's superseded-figure allowance — five `v6` runs named the four raisers correctly and failed on the disclaimer. **T02's prompt** now asks for the file its assertion has always required, which two `v6` runs lost by naming only the function. Only the last two change any `v6` verdict, and both in the direction of crediting an answer that was right; §11 lists a task prompt and an assertion among the triggers regardless |
 | `v6` | Tool execution moved off the macOS host into a pinned Linux container (§4.6). Closes a measured read gap — 29 of 240 `bash` calls in the `v4` pi data read outside the fixture, 20 scanning from `/` (`findings.md`) — and makes the tool userland a recorded artefact. The commands a model runs now resolve to GNU coreutils and a pinned Python rather than whatever macOS ships, so `v5` results are not comparable. Both driver versions bump with it |
 | `v5` | `PiDriver.DRIVER_VERSION` bumped to `2`: the task's `extra_rules` is now delivered via `--append-system-prompt` (it was never sent, inverting W07 and T07), ambient discovery is pinned off, and tool calls are recovered from pi's message log so the progress score works (§4.1, §5.3). §11 lists a driver version among the bumping triggers. `native` behaviour is unchanged, but `task_set_version` is a single global marker, so `v4` results are not comparable under either driver |
@@ -368,7 +369,14 @@ the model.
 ### 4.6 Sandbox
 
 - Each run receives a **fresh copy** of its fixture in a temporary directory. That directory is
-  the root and the only writable area.
+  the root and the only writable area. This is enforced rather than assumed: the work directory
+  *containing* the copy is sealed read-and-traverse-only (mode `0555`) while the run is in
+  progress, so a write beside `root/` fails with `Permission denied`. Without the seal it
+  succeeded — the tool container mounts the whole runs root and executes as the harness's own
+  uid — and a model that resolved an output path against the wrong parent could create the
+  directory, write into it, read it back to confirm, and report success while grading, which
+  reads `root/`, saw nothing. Reads and traversal around the copy are unaffected; only writing
+  outside it fails.
 - **A leading `/` is root-anchored within the sandbox**, as under chroot: `/src/x.py` and
   `src/x.py` denote the same file. Without this, `root / "/x"` discards the root under pathlib
   semantics, escapes to the real filesystem, and is refused with the false and unactionable
@@ -750,7 +758,7 @@ Exact prompt text lives in `harness/tasks/workspace.py` and `harness/tasks/repo.
 | T02 | investigation | Explain the failing test and name the file. Change nothing | names `posting.py` and the faulty operation; **repo byte-identical** |
 | T03 | modification | Fix it so the whole suite passes | `pytest` exits 0; only `posting.py` changed |
 | T04 | tool-recovery | Which function computes the running balance — the prompt's path is wrong | names `running_balance`; ≤3 path errors |
-| T05 | search | Which modules under `src/` raise `ValidationError` | filename set equals expected; an extra name passes only if the answer says that file does not raise |
+| T05 | search | Which modules under `src/` raise `ValidationError` | the four expected filenames are present, and no mention of any other filename claims that it raises |
 | T06 | multi-hop | Decimal places used by the CSV export, and where the value comes from | contains the value **and** `defaults.yaml` |
 | T07 | instruction-adherence | Add a docstring to `trial_balance`, then describe the change | `docs/` byte-identical; docstring present (checked by AST); no US spelling |
 | T08 | long-context | The runbook reference for a failed export | contains the expected token |

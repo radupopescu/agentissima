@@ -348,3 +348,58 @@ def test_the_baseline_sees_no_change_in_an_untouched_tree():
             expected={}, path_errors=0, executor=HostExecutor(),
         )
         assert changed_paths(ctx) == set()
+
+
+# --- the work directory around the fixture is sealed -------------------------
+#
+# The tool container mounts the whole runs root and runs as this uid, so a
+# write beside `root/` used to succeed silently: two `v7` W07 runs computed the
+# right answer, wrote it to `<workdir>/data/`, read it back to confirm, and
+# reported success while grading saw nothing (findings.md, 2026-09-03).
+
+
+def test_a_write_beside_the_fixture_root_is_refused():
+    import pytest as _pytest
+    from harness.runner import prepared
+    from harness.tasks.workspace import build
+
+    task = next(t for t in build() if t.id == "W07")
+    with prepared(task) as (sandbox, _baseline):
+        with _pytest.raises(PermissionError):
+            (sandbox.root.parent / "data").mkdir()
+        with _pytest.raises(PermissionError):
+            (sandbox.root.parent / "stray.txt").write_text("x", encoding="utf-8")
+
+
+def test_writes_inside_the_fixture_root_still_work():
+    """The counterpart: the seal must not break the task itself."""
+    from harness.runner import prepared
+    from harness.tasks.workspace import build
+
+    task = next(t for t in build() if t.id == "W07")
+    with prepared(task) as (sandbox, _baseline):
+        (sandbox.root / "data" / "rowcount.txt").write_text("120", encoding="utf-8")
+        assert (sandbox.root / "data" / "rowcount.txt").read_text() == "120"
+
+
+def test_the_sealed_work_directory_is_still_readable():
+    """Reads and traversal are untouched — only writing beside `root/` fails."""
+    from harness.runner import prepared
+    from harness.tasks.workspace import build
+
+    task = next(t for t in build() if t.id == "W07")
+    with prepared(task) as (sandbox, _baseline):
+        assert [p.name for p in sandbox.root.parent.iterdir()] == ["root"]
+        assert (sandbox.root / "data" / "expenses.csv").read_text().startswith("id,date")
+
+
+def test_the_work_directory_is_cleaned_up_despite_the_seal():
+    """Cleanup unlinks `root/` out of the work directory, which needs write
+    permission back — a seal left in place would leak .runs/ without bound."""
+    from harness.runner import prepared
+    from harness.tasks.workspace import build
+
+    task = next(t for t in build() if t.id == "W07")
+    with prepared(task) as (sandbox, _baseline):
+        workdir = sandbox.root.parent
+    assert not workdir.exists()

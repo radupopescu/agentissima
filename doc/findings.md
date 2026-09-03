@@ -99,9 +99,16 @@ is not wrong — the file genuinely is not where it was asked for — but the ru
 handling instead of instruction adherence, which is the same class of problem the W07 wording
 fix was for.
 
-**Not yet fixed.** Mounting the runs root read-only except each run's `root/` would turn a
-silent success into a visible error. That is a §4.6 change and bumps `task_set_version`, so it
-is recorded in `implementation-plan.md` rather than done mid-campaign.
+**Resolution.** Fixed at `v8`, and not by changing the mount: the container is started once per
+stage and a run's directory does not exist yet at that point, so a per-run bind mount would mean
+a container per run. Instead the work directory *around* `root/` is sealed to mode `0555` for the
+duration of the run — the container executes as the harness's own uid, so a plain filesystem
+permission is enough, and it is kernel-enforced rather than matched on a string. Both commands
+from the runs above were replayed in the container and now fail with `Permission denied`, while
+writes inside `root/` and every read still succeed (`tests/test_isolation.py`). The residual: the
+runs root itself stays writable, because new work directories are created there while a stage is
+in progress, so a write to `/runs/stray.txt` still succeeds. That is outside every graded tree and
+is not the mistake the models make — they resolve output paths against their own parent.
 
 **Evidence:** `results/LFM-G8-8192/transcripts/LFM-G8-pi-W-W07-r2.json`,
 `results/LFM-GQ4-8192/transcripts/LFM-GQ4-pi-W-W07-r1.json`.

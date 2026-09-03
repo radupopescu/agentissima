@@ -76,10 +76,17 @@ LFM-G8 `native` at 39% and LFM-GQ4 `native` at 29%, both over the 20% threshold,
 recommended-default sampling pass remains warranted for the `native` arm — an operator action,
 not an automatic pipeline step. It has never fired for `pi`, whose degenerate rate is 6%.
 
-### Open defects after the `v7` campaign
+### ~~Open defects after the `v7` campaign~~ — both fixed, `task_set_version` bumped to `v8`
 
-Both were found by reading `v7` transcripts; both bump `task_set_version` when fixed, so they
-should be batched into one `v8` with anything else outstanding rather than done singly.
+Both were found by reading `v7` transcripts. Fixed together on 2026-09-03; the fixes and their
+verification are recorded below, and §11's `v8` row states what is no longer comparable.
+
+| Defect | Fixed by | Verified by |
+|---|---|---|
+| T05's marker | `_never_claimed_to_raise` asks whether each mention claims the file raises, instead of matching disclaimer phrasings. Every mention must carry a cue — negated raising, or the file named as where the class is defined — so an answer that lists a file among the raisers and qualifies it only elsewhere still fails | Replayed over all 24 T05 answers from both campaigns: 24/24 classified as a reader would, including the attributive phrasing that defeated the previous version. Eight further cases in `tests/test_driver.py` |
+| The writable work directory | `prepared()` seals the directory around `root/` to mode `0555` for the run and restores it before cleanup (`harness/runner.py`) | The two commands from the failing `v7` runs replayed in the container: both now fail, while writes inside `root/` and all reads still work (`tests/test_isolation.py`) |
+
+The original statement of both, for the record:
 
 | Defect | Evidence | Fix |
 |---|---|---|

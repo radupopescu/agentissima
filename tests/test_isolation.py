@@ -155,3 +155,53 @@ def test_the_pi_config_the_container_sees_points_at_the_host(executor, root):
     result = executor.run("cat /pi-config/models.json", cwd=root, timeout_s=20)
     assert "host.docker.internal" in result.output
     assert "localhost" not in result.output
+
+
+# --- a misdirected write fails where it used to succeed ----------------------
+
+
+@pytest.fixture
+def prepared_run(executor):
+    """A real run directory, sealed as a stage would produce it."""
+    from harness.runner import prepared
+    from harness.tasks.workspace import build
+
+    task = next(t for t in build() if t.id == "W07")
+    with prepared(task, executor) as (sandbox, _baseline):
+        yield executor, sandbox
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The two commands that decided W07 runs in the `v7` campaign, from
+        # results/LFM-GQ4-8192/transcripts/LFM-GQ4-pi-W-W07-r1.json and
+        # results/LFM-G8-8192/transcripts/LFM-G8-pi-W-W07-r2.json.
+        "echo 120 > {wd}/data/rowcount.txt",
+        "mkdir -p {wd}/data",
+        # The same mistake spelled relatively.
+        "echo 120 > ../data/rowcount.txt",
+        "touch {wd}/stray.txt",
+    ],
+)
+def test_a_write_beside_the_fixture_root_fails_in_the_container(prepared_run, command):
+    executor, sandbox = prepared_run
+    wd = f"/runs/{sandbox.root.parent.name}"
+    result = executor.run(command.format(wd=wd), cwd=sandbox.root, timeout_s=20)
+    assert result.exit_code != 0
+
+
+def test_the_task_itself_still_writes(prepared_run):
+    """The counterpart, so the test above cannot pass vacuously."""
+    executor, sandbox = prepared_run
+    result = executor.run("echo 120 > data/rowcount.txt", cwd=sandbox.root, timeout_s=20)
+    assert result.exit_code == 0
+    assert (sandbox.root / "data" / "rowcount.txt").read_text().strip() == "120"
+
+
+def test_reads_around_the_fixture_root_are_unaffected(prepared_run):
+    executor, sandbox = prepared_run
+    wd = f"/runs/{sandbox.root.parent.name}"
+    result = executor.run(f"ls {wd}", cwd=sandbox.root, timeout_s=20)
+    assert result.exit_code == 0
+    assert "root" in result.output

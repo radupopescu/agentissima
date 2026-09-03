@@ -46,6 +46,14 @@ class Graded:
     transcript: list[dict] | None = None
 
 
+# The work directory holding a run's fixture copy, while the run is in
+# progress. Read and traverse only: a write beside `root/` must fail rather
+# than silently succeed (§4.6). Restored to `WORKDIR_MUTABLE` before cleanup,
+# which needs to unlink `root/` out of it.
+WORKDIR_SEALED = 0o555
+WORKDIR_MUTABLE = 0o755
+
+
 @contextmanager
 def prepared(task: Task, executor: Executor | None = None):
     """Yield a sandbox on a fresh fixture copy, plus that copy's baseline hashes.
@@ -54,6 +62,15 @@ def prepared(task: Task, executor: Executor | None = None):
     variant's own files never register as a change made by the agent. It is a
     hash map rather than a second copy of the tree: `Ctx.baseline` explains
     why a copy inside the work directory was the wrong shape.
+
+    The work directory around `root/` is sealed for the duration of the run.
+    The tool container mounts the whole runs root and executes as this same
+    uid, so without it a model that resolves `data/rowcount.txt` against the
+    wrong parent creates a directory beside the fixture, writes into it,
+    reads it back to confirm, and reports success — while grading, which reads
+    `root/`, correctly sees nothing. Two `v7` W07 runs were decided that way
+    (`findings.md`, 2026-09-03). Sealed, the same mistake returns
+    `Permission denied`, which is a result the agent can act on.
     """
     workdir = Path(
         tempfile.mkdtemp(dir=ensure_runs_root(), prefix=f"llmbench-{task.id}-")
@@ -64,8 +81,10 @@ def prepared(task: Task, executor: Executor | None = None):
         if task.variant is not None:
             task.variant(root)
 
+        workdir.chmod(WORKDIR_SEALED)
         yield Sandbox(root, task.fixture, executor), tree_hashes(root)
     finally:
+        workdir.chmod(WORKDIR_MUTABLE)
         shutil.rmtree(workdir, ignore_errors=True)
 
 
