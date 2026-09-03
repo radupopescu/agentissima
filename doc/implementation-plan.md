@@ -71,12 +71,27 @@ run live — each is hours long against a real model, and `run_stages(config_id,
 driver=...)` runs any ordered subset of Stage 0/1/2A/2B, under either driver, in one command
 once that's wanted (§9.3).
 
-The §4.2 degenerate-rate detector has fired: the first live `v4` Stage 2A/2B data (LFM-G8 and
-LFM-M8, both drivers, 8192 context) shows the `native` driver over the §4.2 threshold for both
-models (LFM-G8 39%, LFM-M8 35%), so Stage 5B's recommended-default sampling pass is now
-warranted for those `native` runs — an operator action, not an automatic pipeline step.
+The §4.2 degenerate-rate detector has fired in three consecutive campaigns. At `v7` it is
+LFM-G8 `native` at 39% and LFM-GQ4 `native` at 29%, both over the 20% threshold, so Stage 5B's
+recommended-default sampling pass remains warranted for the `native` arm — an operator action,
+not an automatic pipeline step. It has never fired for `pi`, whose degenerate rate is 6%.
 
-### The `v4` 8192 agent data needs re-collecting
+### Open defects after the `v7` campaign
+
+Both were found by reading `v7` transcripts; both bump `task_set_version` when fixed, so they
+should be batched into one `v8` with anything else outstanding rather than done singly.
+
+| Defect | Evidence | Fix |
+|---|---|---|
+| **T05's `NOT_RAISED` marker is too narrow.** It matches the disclaiming forms the `v6` answers happened to use ("defines the class but does not raise it") and misses the attributive form. LFM-GQ4's `v7` T05 r3 named the four raisers correctly and failed on "…the `ValidationError` class defined in `ledger/validation.py`" | `results/LFM-GQ4-8192/transcripts/LFM-GQ4-pi-T-T05-r3.json` | Not another alternation — the pattern was tuned to five answers and will keep missing forms nobody has read yet. Judge an extra filename by whether the answer *asserts it raises*, or require the four expected names and no false claim, rather than set equality plus an excuse list |
+| **The runs root is mounted read-write, so a write beside `root/` silently succeeds.** Two of twelve `v7` W07 runs computed the right count and wrote it to `<workdir>/data/` instead of `<workdir>/root/data/`, one of them creating the directory first and verifying its own write | `findings.md`, 2026-09-03 | Mount each run's `root/` writable and the rest of the runs root read-only, so the agent gets an error it can act on. `container_session` currently takes one mount for the whole root (§4.6) |
+
+Also outstanding, not a code defect: `results/BON-M2-8192/archive/out-of-protocol/` holds a
+Stage 2B run for a configuration that failed the Stage 2A gate, produced by a faulty campaign
+wrapper on 2026-09-03. It is outside `raw/` so nothing reports it. Keep it as the only Suite T
+evidence for Bonsai that exists, or delete it — but it must never move back into `raw/`.
+
+### ~~The `v4` 8192 agent data needs re-collecting~~ — superseded by the `v6` and `v7` campaigns
 
 Both drivers' Stage 2A/2B data for LFM-M8 and LFM-G8 is due for re-collection, for two
 independent reasons from the defect table above. Neither is a metrics problem — the per-driver

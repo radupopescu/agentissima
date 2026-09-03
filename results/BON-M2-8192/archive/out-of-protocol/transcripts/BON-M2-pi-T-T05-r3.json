@@ -1,0 +1,94 @@
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "Which modules under src/ raise ValidationError? List their filenames."
+      }
+    ],
+    "timestamp": 1788411663767
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "toolCall",
+        "id": "813880390",
+        "name": "grep",
+        "arguments": {
+          "pattern": "ValidationError",
+          "path": "/runs/llmbench-T05-34zxry5q/root/src/",
+          "context": 10,
+          "limit": 100
+        }
+      }
+    ],
+    "api": "openai-completions",
+    "provider": "lmstudio",
+    "model": "bench",
+    "usage": {
+      "input": 2158,
+      "output": 56,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 0,
+      "totalTokens": 2214,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "stopReason": "toolUse",
+    "timestamp": 1788411663777,
+    "responseId": "chatcmpl-sg0q6n3l3aifr0d14dzln",
+    "rawStopReason": "tool_calls"
+  },
+  {
+    "role": "toolResult",
+    "toolCallId": "813880390",
+    "toolName": "grep",
+    "content": [
+      {
+        "type": "text",
+        "text": "ledger/validation.py-1- \"\"\"Validation errors shared across the package.\"\"\"\nledger/validation.py-2- \nledger/validation.py-3- \nledger/validation.py:4: class ValidationError(ValueError):\nledger/validation.py-5-     \"\"\"Raised when input does not satisfy a ledger invariant.\"\"\"\nledger/validation.py-6- \nledger/validation.py-7- \nledger/validation.py-8- def describe(field: str, value: object) -> str:\nledger/validation.py-9-     \"\"\"Return a human-readable description of a rejected field value.\"\"\"\nledger/validation.py-10-     return f\"{field}={value!r}\"\nledger/validation.py-11- \nledger/entries.py-1- \"\"\"Individual ledger entries.\"\"\"\nledger/entries.py-2- \nledger/entries.py-3- from dataclasses import dataclass\nledger/entries.py-4- from decimal import Decimal\nledger/entries.py-5- \nledger/entries.py-6- from .currency import quantise\nledger/entries.py:7: from .validation import ValidationError, describe\nledger/entries.py-8- \nledger/entries.py-9- \nledger/entries.py-10- @dataclass(frozen=True)\nledger/entries.py-11- class Entry:\nledger/entries.py-12-     account: str\nledger/entries.py-13-     amount: Decimal\nledger/entries.py-14-     memo: str = \"\"\nledger/entries.py-15- \nledger/entries.py-16- \nledger/entries.py-17- def make_entry(account: str, amount: Decimal, memo: str = \"\") -> Entry:\nledger/entries.py-10- @dataclass(frozen=True)\nledger/entries.py-11- class Entry:\nledger/entries.py-12-     account: str\nledger/entries.py-13-     amount: Decimal\nledger/entries.py-14-     memo: str = \"\"\nledger/entries.py-15- \nledger/entries.py-16- \nledger/entries.py-17- def make_entry(account: str, amount: Decimal, memo: str = \"\") -> Entry:\nledger/entries.py-18-     \"\"\"Build a validated :class:`Entry`.\"\"\"\nledger/entries.py-19-     if not account or not account.strip():\nledger/entries.py:20:         raise ValidationError(\"account must be a non-empty name\")\nledger/entries.py-21-     if not isinstance(amount, Decimal):\nledger/entries.py-22-         raise ValidationError(\"amount must be a Decimal, \" + describe(\"amount\", amount))\nledger/entries.py-23-     return Entry(account=account.strip(), amount=quantise(amount), memo=memo)\nledger/entries.py-24- \nledger/entries.py-25- \nledger/entries.py-26- def total(entries: list[Entry]) -> Decimal:\nledger/entries.py-27-     \"\"\"Sum the amounts of ``entries``.\"\"\"\nledger/entries.py-28-     return quantise(sum((e.amount for e in entries), Decimal(\"0\")))\nledger/entries.py-29- \nledger/entries.py-12-     account: str\nledger/entries.py-13-     amount: Decimal\nledger/entries.py-14-     memo: str = \"\"\nledger/entries.py-15- \nledger/entries.py-16- \nledger/entries.py-17- def make_entry(account: str, amount: Decimal, memo: str = \"\") -> Entry:\nledger/entries.py-18-     \"\"\"Build a validated :class:`Entry`.\"\"\"\nledger/entries.py-19-     if not account or not account.strip():\nledger/entries.py-20-         raise ValidationError(\"account must be a non-empty name\")\nledger/entries.py-21-     if not isinstance(amount, Decimal):\nledger/entries.py:22:         raise ValidationError(\"amount must be a Decimal, \" + describe(\"amount\", amount))\nledger/entries.py-23-     return Entry(account=account.strip(), amount=quantise(amount), memo=memo)\nledger/entries.py-24- \nledger/entries.py-25- \nledger/entries.py-26- def total(entries: list[Entry]) -> Decimal:\nledger/entries.py-27-     \"\"\"Sum the amounts of ``entries``.\"\"\"\nledger/entries.py-28-     return quantise(sum((e.amount for e in entries), Decimal(\"0\")))\nledger/entries.py-29- \nledger/storage/file_store.py-1- \"\"\"File-backed entry store.\"\"\"\nledger/storage/file_store.py-2- \nledger/storage/file_store.py-3- import json\nledger/storage/file_store.py-4- from decimal import Decimal\nledger/storage/file_store.py-5- from pathlib import Path\nledger/storage/file_store.py-6- \nledger/storage/file_store.py-7- from ..entries import Entry\nledger/storage/file_store.py:8: from ..validation import ValidationError\nledger/storage/file_store.py-9- \nledger/storage/file_store.py-10- \nledger/storage/file_store.py-11- class FileStore:\nledger/storage/file_store.py-12-     def __init__(self, path: Path) -> None:\nledger/storage/file_store.py-13-         self.path = Path(path)\nledger/storage/file_store.py-14- \nledger/storage/file_store.py-15-     def save(self, entries: list[Entry]) -> None:\nledger/storage/file_store.py-16-         if self.path.is_dir():\nledger/storage/file_store.py-17-             raise ValidationError(\"store path must be a file, not a directory\")\nledger/storage/file_store.py-18-         payload = [\nledger/storage/file_store.py-7- from ..entries import Entry\nledger/storage/file_store.py-8- from ..validation import ValidationError\nledger/storage/file_store.py-9- \nledger/storage/file_store.py-10- \nledger/storage/file_store.py-11- class FileStore:\nledger/storage/file_store.py-12-     def __init__(self, path: Path) -> None:\nledger/storage/file_store.py-13-         self.path = Path(path)\nledger/storage/file_store.py-14- \nledger/storage/file_store.py-15-     def save(self, entries: list[Entry]) -> None:\nledger/storage/file_store.py-16-         if self.path.is_dir():\nledger/storage/file_store.py:17:             raise ValidationError(\"store path must be a file, not a directory\")\nledger/storage/file_store.py-18-         payload = [\nledger/storage/file_store.py-19-             {\"account\": e.account, \"amount\": str(e.amount), \"memo\": e.memo} for e in entries\nledger/storage/file_store.py-20-         ]\nledger/storage/file_store.py-21-         self.path.write_text(json.dumps(payload, indent=2), encoding=\"utf-8\")\nledger/storage/file_store.py-22- \nledger/storage/file_store.py-23-     def load(self) -> list[Entry]:\nledger/storage/file_store.py-24-         if not self.path.exists():\nledger/storage/file_store.py-25-             return []\nledger/storage/file_store.py-26-         payload = json.loads(self.path.read_text(encoding=\"utf-8\"))\nledger/storage/file_store.py-27-         return [\nledger/posting.py-1- \"\"\"Posting entries and splitting amounts across accounts.\"\"\"\nledger/posting.py-2- \nledger/posting.py-3- from decimal import Decimal\nledger/posting.py-4- \nledger/posting.py-5- from .currency import quantise\nledger/posting.py-6- from .entries import Entry, make_entry\nledger/posting.py:7: from .validation import ValidationError\nledger/posting.py-8- \nledger/posting.py-9- \nledger/posting.py-10- def split_amount(total: Decimal, weights: list[int]) -> list[Decimal]:\nledger/posting.py-11-     \"\"\"Split ``total`` across ``weights``.\nledger/posting.py-12- \nledger/posting.py-13-     The returned shares must sum exactly to ``total``. Any rounding remainder\nledger/posting.py-14-     is added to the first share.\nledger/posting.py-15-     \"\"\"\nledger/posting.py-16-     if not weights:\nledger/posting.py-17-         raise ValidationError(\"weights must not be empty\")\nledger/posting.py-7- from .validation import ValidationError\nledger/posting.py-8- \nledger/posting.py-9- \nledger/posting.py-10- def split_amount(total: Decimal, weights: list[int]) -> list[Decimal]:\nledger/posting.py-11-     \"\"\"Split ``total`` across ``weights``.\nledger/posting.py-12- \nledger/posting.py-13-     The returned shares must sum exactly to ``total``. Any rounding remainder\nledger/posting.py-14-     is added to the first share.\nledger/posting.py-15-     \"\"\"\nledger/posting.py-16-     if not weights:\nledger/posting.py:17:         raise ValidationError(\"weights must not be empty\")\nledger/posting.py-18-     if any(w <= 0 for w in weights):\nledger/posting.py-19-         raise ValidationError(\"weights must be positive\")\nledger/posting.py-20- \nledger/posting.py-21-     total_weight = sum(weights)\nledger/posting.py-22-     shares = [round(float(total) * w / total_weight, 2) for w in weights]\nledger/posting.py-23-     return [Decimal(str(s)) for s in shares]\nledger/posting.py-24- \nledger/posting.py-25- \nledger/posting.py-26- def post_split(account_names: list[str], amount: Decimal, weights: list[int]) -> list[Entry]:\nledger/posting.py-27-     \"\"\"Post ``amount`` across ``account_names`` in proportion to ``weights``.\"\"\"\nledger/posting.py-9- \nledger/posting.py-10- def split_amount(total: Decimal, weights: list[int]) -> list[Decimal]:\nledger/posting.py-11-     \"\"\"Split ``total`` across ``weights``.\nledger/posting.py-12- \nledger/posting.py-13-     The returned shares must sum exactly to ``total``. Any rounding remainder\nledger/posting.py-14-     is added to the first share.\nledger/posting.py-15-     \"\"\"\nledger/posting.py-16-     if not weights:\nledger/posting.py-17-         raise ValidationError(\"weights must not be empty\")\nledger/posting.py-18-     if any(w <= 0 for w in weights):\nledger/posting.py:19:         raise ValidationError(\"weights must be positive\")\nledger/posting.py-20- \nledger/posting.py-21-     total_weight = sum(weights)\nledger/posting.py-22-     shares = [round(float(total) * w / total_weight, 2) for w in weights]\nledger/posting.py-23-     return [Decimal(str(s)) for s in shares]\nledger/posting.py-24- \nledger/posting.py-25- \nledger/posting.py-26- def post_split(account_names: list[str], amount: Decimal, weights: list[int]) -> list[Entry]:\nledger/posting.py-27-     \"\"\"Post ``amount`` across ``account_names`` in proportion to ``weights``.\"\"\"\nledger/posting.py-28-     if len(account_names) != len(weights):\nledger/posting.py-29-         raise ValidationError(\"account_names and weights must be the same length\")\nledger/posting.py-19-         raise ValidationError(\"weights must be positive\")\nledger/posting.py-20- \nledger/posting.py-21-     total_weight = sum(weights)\nledger/posting.py-22-     shares = [round(float(total) * w / total_weight, 2) for w in weights]\nledger/posting.py-23-     return [Decimal(str(s)) for s in shares]\nledger/posting.py-24- \nledger/posting.py-25- \nledger/posting.py-26- def post_split(account_names: list[str], amount: Decimal, weights: list[int]) -> list[Entry]:\nledger/posting.py-27-     \"\"\"Post ``amount`` across ``account_names`` in proportion to ``weights``.\"\"\"\nledger/posting.py-28-     if len(account_names) != len(weights):\nledger/posting.py:29:         raise ValidationError(\"account_names and weights must be the same length\")\nledger/posting.py-30-     shares = split_amount(quantise(amount), weights)\nledger/posting.py-31-     return [make_entry(name, share) for name, share in zip(account_names, shares)]\nledger/posting.py-32- \nledger/reporting/export_csv.py-1- \"\"\"CSV export of ledger entries.\"\"\"\nledger/reporting/export_csv.py-2- \nledger/reporting/export_csv.py-3- import csv\nledger/reporting/export_csv.py-4- from pathlib import Path\nledger/reporting/export_csv.py-5- \nledger/reporting/export_csv.py-6- from ..config.settings import export_decimal_places\nledger/reporting/export_csv.py-7- from ..entries import Entry\nledger/reporting/export_csv.py:8: from ..validation import ValidationError\nledger/reporting/export_csv.py-9- \nledger/reporting/export_csv.py-10- \nledger/reporting/export_csv.py-11- def export_entries(entries: list[Entry], path: Path) -> int:\nledger/reporting/export_csv.py-12-     \"\"\"Write ``entries`` to ``path`` as CSV. Returns the number of rows written.\"\"\"\nledger/reporting/export_csv.py-13-     if not entries:\nledger/reporting/export_csv.py-14-         raise ValidationError(\"refusing to export an empty entry list\")\nledger/reporting/export_csv.py-15- \nledger/reporting/export_csv.py-16-     places = export_decimal_places()\nledger/reporting/export_csv.py-17-     with Path(path).open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\nledger/reporting/export_csv.py-18-         writer = csv.writer(handle, lineterminator=\"\\n\")\nledger/reporting/export_csv.py-4- from pathlib import Path\nledger/reporting/export_csv.py-5- \nledger/reporting/export_csv.py-6- from ..config.settings import export_decimal_places\nledger/reporting/export_csv.py-7- from ..entries import Entry\nledger/reporting/export_csv.py-8- from ..validation import ValidationError\nledger/reporting/export_csv.py-9- \nledger/reporting/export_csv.py-10- \nledger/reporting/export_csv.py-11- def export_entries(entries: list[Entry], path: Path) -> int:\nledger/reporting/export_csv.py-12-     \"\"\"Write ``entries`` to ``path`` as CSV. Returns the number of rows written.\"\"\"\nledger/reporting/export_csv.py-13-     if not entries:\nledger/reporting/export_csv.py:14:         raise ValidationError(\"refusing to export an empty entry list\")\nledger/reporting/export_csv.py-15- \nledger/reporting/export_csv.py-16-     places = export_decimal_places()\nledger/reporting/export_csv.py-17-     with Path(path).open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\nledger/reporting/export_csv.py-18-         writer = csv.writer(handle, lineterminator=\"\\n\")\nledger/reporting/export_csv.py-19-         writer.writerow([\"account\", \"amount\", \"memo\"])\nledger/reporting/export_csv.py-20-         for entry in entries:\nledger/reporting/export_csv.py-21-             writer.writerow([entry.account, f\"{entry.amount:.{places}f}\", entry.memo])\nledger/reporting/export_csv.py-22-     return len(entries)\nledger/reporting/export_csv.py-23- "
+      }
+    ],
+    "isError": false,
+    "timestamp": 1788411671644
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "The following modules under `src/` raise `ValidationError`:\n\n1. **ledger/validation.py**  \n   - This module defines the `ValidationError` class and custom validation functions.\n\n2. **ledger/entries.py**  \n   - This module contains the `Entry` class and validation logic for creating entries.\n\n3. **ledger/storage/file_store.py**  \n   - This module includes validation logic for the `FileStore` class when saving entries.\n\n4. **ledger/posting.py**  \n   - This module has validation functions for splitting amounts across accounts and posting entries.\n\n5. **ledger/reporting/export_csv.py**  \n   - This module raises validation errors when attempting to export an empty list of entries.\n\nThese are the files where `ValidationError` is raised."
+      }
+    ],
+    "api": "openai-completions",
+    "provider": "lmstudio",
+    "model": "bench",
+    "usage": {
+      "input": 5682,
+      "output": 155,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 0,
+      "totalTokens": 5837,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "stopReason": "stop",
+    "timestamp": 1788411671645,
+    "responseId": "chatcmpl-5evqjt3uw6azkfyo9um3r",
+    "rawStopReason": "stop"
+  }
+]

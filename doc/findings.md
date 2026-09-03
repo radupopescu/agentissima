@@ -16,6 +16,144 @@ drawn from.
 
 ---
 
+## 2026-09-03 — the `v7` campaign moved the instrument, not the models
+
+**What was run.** The full six-configuration campaign at `v7`: Stage 0, Stage 1 (8K and 16K),
+Stage 2A and Stage 2B under `pi`, plus the Stage 5A `native` arm for LFM-G8 and LFM-GQ4. 534
+records, 6.86 h of run wall clock. Nothing in the `v7` bump touches inference — the changes are
+two task wordings, one assertion, the change baseline and the pi driver's record-keeping — so
+the campaign doubles as a replication of `v6`.
+
+**It replicates.** Where nothing we changed applies, nothing moved: BON-M2 3/30, BON-G2 0/30,
+LFM-G8 `native` 9/30, LFM-GQ4 `native` 12/30, all identical to `v6`. Stage 1 throughput matched
+to two decimal places on all six configurations — LFM-GQ4 8K, for instance, TTFT 8.58 both
+times, 769.2 prompt tok/s both times. The environment did not drift between campaigns, so
+Suite W and T differences are attributable rather than ambient.
+
+**The Suite T movement is entirely grading.** T05's assertion changed while its prompt did not,
+so the `v6` answers can be re-graded under the `v7` check — the same text, judged both ways:
+7/12 as graded, **12/12 re-graded**. The observed Suite T change across the four LFM
+configurations is +5 in total (+2, 0, +3, 0). The grading fix accounts for all of it, and the
+residual is zero. No Suite T improvement at `v7` should be read as models doing better.
+
+**W07 now measures what it is specified to measure**, per the entry below:
+
+| W07, `pi`, 12 runs | `v6` | `v7` |
+|---|---|---|
+| Passed | 2/12 | 8/12 |
+| Failed `rowcount_correct` | 10 | 2 |
+| Failed `british_spelling` | 2 | 2 |
+
+The counting failures collapsed and the conflict arm held flat. Both surviving
+`rowcount_correct` failures miscounted nothing — see the misdirected-write entry below.
+
+**Evidence:** `results/*/raw/*.jsonl` (`v7`) against `results/*/archive/*-v6.jsonl`.
+
+---
+
+## 2026-09-03 — Suite W does not discriminate between the four LFM configurations
+
+**What happened.** At `v7` all four LFM configurations scored **20/30** on Suite W. At `v6` they
+spread 17-22, which read as a ranking and was quoted as one.
+
+**It was never a ranking.** Testing `v6`'s four cells for homogeneity against their pooled rate
+of 0.642: **χ² = 1.85 on 3 degrees of freedom, against a 5% critical value of 7.81.** The 17-22
+spread is entirely consistent with four configurations of identical ability. The `v7` four-way
+tie is not a coincidence needing explanation; it is what `v6` already implied.
+
+The test overstates the available resolution, so the real position is weaker still: the 30 runs
+per cell are 10 tasks × 3 repetitions, and repetitions of one task are correlated, so the
+effective sample is nearer 10 than 30.
+
+**What Suite W does separate.** The task-level structure is bimodal and stable across both
+campaigns: W01, W04, W05, W08 pass 12/12 and W02, W03, W06 pass 1-3/12. Nothing sits in the
+middle where discrimination would live. Suite W separates *models* — LFM from Bonsai, decisively
+— and does not separate *quantisations of one model*.
+
+**Consequence for §10.4.** No claim of the form "Q8_0 beats 8-bit MLX on agent task success" is
+supported by either campaign. Question 3 (operating point) rests on latency and memory, which
+are tight and reproducible; question 1 (runtime) rests on LFM-G8 vs LFM-M8's timing gap, not on
+their identical 20/30. Reporting Suite W as a bare fraction invites the misreading — an interval
+would not have.
+
+**Evidence:** `results/LFM-*-8192/raw/stage2a-pi.jsonl` and the `v6` archives.
+
+---
+
+## 2026-09-03 — agents write beside the fixture root, and the mount lets them succeed
+
+**What happened.** Two of the three remaining W07 failures at `v7` — LFM-G8 r2 and LFM-GQ4 r1 —
+computed the row count correctly and then wrote it to `<workdir>/data/rowcount.txt` instead of
+`<workdir>/root/data/rowcount.txt`. LFM-G8's run ran `mkdir -p` to create that directory, wrote
+`120` into it four times, verified its own write by reading it back, and reported success. Its
+final message is correct in every particular: "121 total lines (1 header + 120 data rows), so I
+counted the data rows as 120".
+
+**Why the write succeeds.** `container_session` bind-mounts the whole runs root, so everything
+beside `root/` is writable. Removing the `pristine/` copy left `root/` alone in the work
+directory, which is tidier but gives a stray write nothing to collide with. The agent gets no
+error, cannot detect the mistake, and cannot recover from it.
+
+**What it costs.** Two of twelve W07 runs were decided by this rather than by the task. Grading
+is not wrong — the file genuinely is not where it was asked for — but the run measures path
+handling instead of instruction adherence, which is the same class of problem the W07 wording
+fix was for.
+
+**Not yet fixed.** Mounting the runs root read-only except each run's `root/` would turn a
+silent success into a visible error. That is a §4.6 change and bumps `task_set_version`, so it
+is recorded in `implementation-plan.md` rather than done mid-campaign.
+
+**Evidence:** `results/LFM-G8-8192/transcripts/LFM-G8-pi-W-W07-r2.json`,
+`results/LFM-GQ4-8192/transcripts/LFM-GQ4-pi-W-W07-r1.json`.
+
+---
+
+## 2026-09-03 — `swap_flag` is a machine-state reading, not a configuration property
+
+**What happened.** Two swap flags flipped between campaigns, both towards not swapping:
+LFM-M8 at 16K (`v6` yes, `v7` no) and BON-G2 at 8K (`v6` yes, `v7` no). Peak memory for the
+same cells barely moved — BON-G2 8K is 5.56 GiB in both — so this is not a different allocation
+pattern but a different machine state around it.
+
+**What is stable.** The configurations under genuine pressure swap in both campaigns: BON-M2 on
+both tiers (8.06 and 12.02 GiB) and BON-G2 at 16K (8.46 GiB). An 8B model at 16 GiB is the real
+signal; the flips are the marginal cases either side of it.
+
+**Consequence.** `swap_flag` feeds the report's Swap column and, through §2.2, the admissibility
+story. A single campaign's flag is not evidence that a configuration does or does not swap —
+only repeated agreement is. LFM-M8's `v6` swap at 16K should not be quoted as a property of that
+configuration.
+
+**Evidence:** `results/{LFM-M8,BON-G2}-{8192,16384}/raw/stage1.jsonl` against the `v6` archives.
+
+---
+
+## 2026-09-03 — the driver decides what a task measures, again
+
+**What happened.** The W07 wording change moved the task from 2/12 to 8/12 under `pi` and had
+**no effect at all** under `native`: LFM-G8 failed 3/3 in both campaigns, every run on
+`rowcount_correct`. The runs did not miscount — they never wrote the file, terminating
+`empty_answer` (`v7`) or `loop_detected` (`v6`) at progress 2.
+
+The same thing happened to T02's prompt change. Under `pi` it took the task to 11/12; under
+`native` LFM-G8 went 2/3 → 0/3 and LFM-GQ4 3/3 → 1/3, with every new failure an `empty_answer`
+or `loop_detected` at progress 2. The added sentence was never reached.
+
+**Why it matters.** A task-level fix can only be validated on a driver whose runs reach the
+behaviour being fixed. `native` ends 30 of its 60 Suite W runs degenerately — half — so it cannot
+serve as a control for a change to what a final answer must contain. This is the 2026-09-02 termination
+finding arriving from the other direction: the same task, model and fixture measure instruction
+adherence under one driver and termination under the other.
+
+**Stage 5A replicates exactly.** Conditional on reaching a final answer, `native` still matches
+or beats `pi` in every cell at `v7`: LFM-G8 Suite W 75% vs 74%, Suite T 100% vs 97%; LFM-GQ4
+Suite W 80% vs 71%, Suite T 100% vs 93%. And `invalid_calls`, which only `native` can observe,
+is 3 and 12 for LFM-G8's two suites, 0 and 9 for LFM-GQ4's.
+
+**Evidence:** `results/{LFM-G8,LFM-GQ4}-8192/raw/stage2{a,b}{,-pi}.jsonl`, `v7`.
+
+---
+
 ## 2026-09-02 — two Suite T tasks were failing correct answers
 
 **T05 — the careful answer failed.** `_check_t05` compared the answer's basename set to the four
