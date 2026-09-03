@@ -16,6 +16,47 @@ drawn from.
 
 ---
 
+## 2026-09-03 — the artefacts disagree about their own recommended sampling
+
+**What happened.** Preparing Stage 5B's sampling pass meant answering what "the model's
+recommended defaults" are. They are stated by the artefacts themselves, and the four LFM
+artefacts of one model do not agree:
+
+| Configuration | Source | Stated |
+|---|---|---|
+| LFM-G8 (Q8_0) | GGUF header, `general.sampling.*` | `temperature 0.1`, `top_k 50` |
+| LFM-GQ4 (QAD-Q4_0) | GGUF header | **`temperature 0.2`, `top_k 80`** |
+| LFM-M8, LFM-BF16 (MLX) | `generation_config.json` | `temperature 0.1`, `top_k 50`, `repetition_penalty 1.1` |
+| BON-G2 | GGUF header | `temperature 0.5`, `top_k 20`, `top_p 0.85` |
+| BON-M2 | — | **nothing; no `generation_config.json` ships with the artefact** |
+
+**Why it matters.** "Run the model at its recommended defaults" is not one setting per model. It
+is one per *artefact*, and the QAD quantisation asks for twice the temperature and a wider `top_k`
+than the Q8_0 build of the same weights — plausibly because quantisation-aware distillation
+changes the output distribution, though nothing here tests that. Resolving the defaults once per
+model and sharing them would have run three of the four LFM configurations at settings their own
+artefacts do not recommend.
+
+It also means the sampling pass is not available for every configuration: BON-M2 states nothing,
+so asking for one fails rather than inventing values. That is the right outcome — but it makes
+the Bonsai pair asymmetric if the pass is ever used to compare them.
+
+**Also recorded:** neither MLX artefact states `top_p`, and neither GGUF states a repeat penalty.
+Unstated parameters keep their §4.2 controlled value, and every session records which keys the
+artefact actually supplied.
+
+**Related harness defect, found while reading this.** `harness/gguf_meta.py` decoded float32
+metadata with `"<I"`, so `general.sampling.temp` came back as `1036831949` rather than `0.1`.
+Invisible while the reader was only asked for integer geometry (§2.2); wrong the moment anything
+read a real float. Fixed, with a second fix alongside it: `parse()` accepted a metadata layout on
+the strength of `general.architecture` alone, which the *wrong* layout can decode correctly before
+walking off into padding — it now requires every declared key to be present and non-empty, which
+is what its docstring always claimed.
+
+**Evidence:** the artefacts under `~/.lmstudio/models/`, read by `harness/sampling.py`.
+
+---
+
 ## 2026-09-03 — the `v7` campaign moved the instrument, not the models
 
 **What was run.** The full six-configuration campaign at `v7`: Stage 0, Stage 1 (8K and 16K),

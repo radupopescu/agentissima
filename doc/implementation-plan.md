@@ -65,11 +65,11 @@ Ten defects that only a real model exposed, now fixed and covered by tests:
 
 ### Not built
 
-Stage 5B's recommended-default sampling pass (its detector is built and has now fired — see
-below). Stage 3 and the compaction variant of Stage 5B are built and unit-tested but not yet
-run live — each is hours long against a real model, and `run_stages(config_id, stage_names,
-driver=...)` runs any ordered subset of Stage 0/1/2A/2B, under either driver, in one command
-once that's wanted (§9.3).
+Nothing. Stage 3, Stage 5B's compaction experiment and Stage 5B's sampling pass are all built
+and unit-tested, each with a CLI entry point; none has been run against a model, because each is
+hours long. `run_stages(config_id, stage_names, driver=...)` runs any ordered subset of Stage
+0/1/2A/2B, under either driver, in one command (§9.3); Stage 3 and both Stage 5B experiments are
+deliberately outside that registry and are invoked on their own.
 
 The §4.2 degenerate-rate detector has fired in three consecutive campaigns. At `v7` it is
 LFM-G8 `native` at 39% and LFM-GQ4 `native` at 29%, both over the 20% threshold, so Stage 5B's
@@ -446,7 +446,7 @@ tools and never enters `harness/sandbox.py`. It reaches 20/20, so no §7 asserti
 `native`'s transcript structure and Stage 5A's cross-check is sound. Covered by
 `tests/test_gates.py` as well as the CLI gate.
 
-### M8 — Stage 5B — partially done: the compaction experiment; unit-tested, not run live
+### M8 — Stage 5B — built: compaction *and* the sampling pass; unit-tested, neither run live
 
 §9 Stage 5B has three parts, only one of which is a concrete, buildable deliverable — see
 `benchmark.md` §9 Stage 5B for the reasoning recorded against each:

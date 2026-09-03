@@ -80,7 +80,7 @@ class _Stream:
         self._file.close()
 
 
-def _parse(path: Path, align: int | None) -> tuple[int, int, dict, list[str]]:
+def _parse(path: Path, align: int | None) -> tuple[int, int, dict, list[str], int]:
     stream = _Stream(path)
     try:
         stream.ensure(_MIN_HEADER)
@@ -111,7 +111,9 @@ def _parse(path: Path, align: int | None) -> tuple[int, int, dict, list[str]]:
                 for _ in range(count):
                     if item_type == _STR:
                         item, off = _read_string(stream, off)
-                    elif item_type in (_U32, _I32, _F32):
+                    elif item_type == _F32:
+                        item, off = scalar("<f", 4, off)
+                    elif item_type in (_U32, _I32):
                         item, off = scalar("<I", 4, off)
                     elif item_type in (_U64, _I64, _F64):
                         item, off = scalar("<Q", 8, off)
@@ -119,7 +121,14 @@ def _parse(path: Path, align: int | None) -> tuple[int, int, dict, list[str]]:
                         item = None
                     items.append(item)
                 value = items
-            elif value_type in (_U32, _I32, _F32):
+            elif value_type == _F32:
+                # Decoded as a float, not as its bit pattern. Reading it with
+                # "<I" was harmless while only integer geometry fields were
+                # wanted (§2.2), and wrong the moment anything reads a real
+                # float: `general.sampling.temp` came back as 1036831949
+                # rather than 0.1.
+                value, off = scalar("<f", 4, off)
+            elif value_type in (_U32, _I32):
                 value, off = scalar("<I", 4, off)
             elif value_type in (_U64, _I64):
                 value, off = scalar("<Q", 8, off)
@@ -143,7 +152,7 @@ def _parse(path: Path, align: int | None) -> tuple[int, int, dict, list[str]]:
             off += n_dims * 8 + 4 + 8  # dims, ggml type, tensor offset
     finally:
         stream.close()
-    return version, n_tensors, metadata, names
+    return version, n_tensors, metadata, names, n_kv
 
 
 def parse(path: str | Path) -> tuple[int, int, dict, list[str]]:
@@ -151,13 +160,24 @@ def parse(path: str | Path) -> tuple[int, int, dict, list[str]]:
 
     Unparseable files raise ``ValueError``/``struct.error``. The two metadata
     layouts (aligned and unaligned) are both attempted; a result is only
-    accepted when it carries a plausible `general.architecture`, so a
-    misaligned but non-crashing decode cannot pass silently.
+    accepted when it decoded *completely* — every declared key present, none
+    of them empty, and a plausible `general.architecture` — so a misaligned
+    but non-crashing decode cannot pass silently.
+
+    The key count is what makes that true. Testing `general.architecture`
+    alone was not enough: it is the first key in both layouts, so the wrong
+    layout can read it correctly and then walk off into padding, returning
+    `{"general.architecture": "lfm2", "": 0}` — accepted, and missing
+    everything the caller asked for.
     """
     for align in (None, _ALIGNMENT):
         try:
-            version, count, metadata, names = _parse(Path(path), align)
-            if isinstance(metadata.get("general.architecture"), str):
+            version, count, metadata, names, declared_kv = _parse(Path(path), align)
+            if (
+                isinstance(metadata.get("general.architecture"), str)
+                and len(metadata) == declared_kv
+                and all(metadata)
+            ):
                 return version, count, metadata, names
         except (struct.error, ValueError):
             continue

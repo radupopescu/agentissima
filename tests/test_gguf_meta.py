@@ -13,7 +13,7 @@ import pytest
 
 from harness import gguf_meta
 
-_STR, _U32, _ARRAY, _BOOL = 8, 4, 9, 7
+_STR, _U32, _ARRAY, _BOOL, _F32 = 8, 4, 9, 7, 6
 
 
 def _s(kv: list[tuple[str, tuple[int, bytes]]], names: list[str], align: bool):
@@ -119,3 +119,38 @@ def test_non_gguf_files_raise(tmp_path):
 # The regex lives with the probe; reaching for it in the test pins the naming
 # contract both sides depend on.
 import re as gguf_meta_re  # noqa: E402
+
+# --- float32 values are floats, not their bit patterns -----------------------
+#
+# Reading _F32 with "<I" was invisible while only integer geometry was wanted
+# (§2.2) and wrong the moment anything read a real float: the sampling pass
+# needs `general.sampling.temp`, which came back as 1036831949 rather than 0.1.
+
+
+@pytest.mark.parametrize("align", [False, True])
+def test_a_float32_value_is_decoded_as_a_float(tmp_path, align):
+    kv = [
+        ("general.architecture", (_STR, _string("lfm2"))),
+        ("general.sampling.temp", (_F32, struct.pack("<f", 0.1))),
+        ("general.sampling.top_k", (_U32, struct.pack("<I", 50))),
+    ]
+    path = tmp_path / "f32.gguf"
+    path.write_bytes(_s(kv, ["token_embd.weight"], align))
+
+    _version, _n_tensors, metadata, _names = gguf_meta.parse(path)
+    assert metadata["general.sampling.temp"] == pytest.approx(0.1, abs=1e-6)
+    assert metadata["general.sampling.top_k"] == 50
+
+
+@pytest.mark.parametrize("align", [False, True])
+def test_a_float32_array_is_decoded_as_floats(tmp_path, align):
+    kv = [
+        ("general.architecture", (_STR, _string("lfm2"))),
+        ("some.floats", (_ARRAY, struct.pack("<I", _F32) + struct.pack("<Q", 2)
+                         + struct.pack("<f", 0.25) + struct.pack("<f", 0.5))),
+    ]
+    path = tmp_path / "f32array.gguf"
+    path.write_bytes(_s(kv, ["token_embd.weight"], align))
+
+    _version, _n_tensors, metadata, _names = gguf_meta.parse(path)
+    assert metadata["some.floats"] == pytest.approx([0.25, 0.5])

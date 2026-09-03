@@ -947,7 +947,16 @@ Survivors of the 2A gate only, 3 repetitions per task.
 ### Stage 3 — 16K
 
 Both suites, for configurations above the floor at 8K. Repetitions: 3 per task, as at Stage
-2A/2B.
+2A/2B. Runs under `pi` by default, the controlled comparison since `v5` (§4.1), and writes to a
+driver-specific raw file for the same reason Stage 2A/2B do.
+
+**What it is for, given the `v7` data.** 10% of `v7` `pi` runs accumulated more history than the
+8K window holds, up to an estimated 42k tokens, while their recorded per-turn prompt stayed near
+5k — so the agent was working from a truncated view of its own investigation. The runs that did
+it are the ones that fail: W02, W03, W06 and T03. Stage 3 therefore asks a specific question
+rather than a general one — do those tasks fail partly because the agent loses its own working
+history at 8K? — and it asks it as a paired comparison within one configuration, which does not
+require separating configurations that §10.4 shows are indistinguishable.
 
 ### Stage 4 — long context
 
@@ -983,7 +992,24 @@ supports it. Nothing in Stage 5B feeds the controlled comparison.
 - **Recommended-default sampling** runs once the §4.2 trigger fires. `harness/report.py`'s
   `is_degenerate_triggered` checks raw records for it (repetition loops, empty completions, or
   a malformed-call/timeout termination, at >20% of a configuration's agent runs). The sampling
-  pass itself is an operator action once the detector fires, not automatic.
+  pass itself is an operator action once the detector fires, not automatic:
+  `harness.stages stage5b-sampling <config_id>`, with `--show` to print the defaults and run
+  nothing.
+
+  **The defaults are read from the artefact, per configuration** (`harness/sampling.py`): GGUF
+  states them as `general.sampling.*` header keys, MLX in a `generation_config.json` beside the
+  weights. They are not shared between configurations, because the artefacts disagree — Q8_0
+  recommends `temperature 0.1, top_k 50` and QAD-Q4_0 `temperature 0.2, top_k 80` for the same
+  model. Anything an artefact does not state keeps its §4.2 controlled value, and `max_tokens`
+  and `seed` stay pinned regardless: the first is a budget rather than a recommendation, the
+  second keeps the pass as reproducible as the greedy run it is compared against. Each session
+  records the source file, the keys that file supplied, and the resolved set, so a result can
+  never imply a recommendation the artefact did not make. A configuration whose artefact states
+  nothing — `BON-M2` — cannot have a sampling pass, and asking for one fails rather than
+  inventing values.
+
+  Records carry the driver label `<driver>-sampled`, which `COMPARISON_DRIVERS` excludes, so the
+  pass never enters the §10 tables.
 - **The context-compaction experiment** is a runnable stage: `harness/stages.py`'s
   `run_stage5b_compact()`, using `NativeDriver(history_mode="compact")` (§4.1). Not part of
   `run_stages()`'s registry (§9.3); run separately.

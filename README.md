@@ -110,10 +110,20 @@ discovery matched a helper rather than the backend.
 # Or as one ordered sequence, stopping at the first stage that fails its gate
 .venv/bin/python -m harness.stages run LFM-M8 --stages stage0,stage1,stage2a,stage2b
 
+# Stage 3 (16K) and Stage 5B, run separately from the sequence above
+.venv/bin/python -m harness.stages stage3 LFM-G8                    # both suites at 16K, pi
+.venv/bin/python -m harness.stages stage5b-sampling LFM-G8 --show   # print the defaults only
+.venv/bin/python -m harness.stages stage5b-sampling LFM-G8          # run the pass
+
 # Reporting, regenerated from JSONL only
 .venv/bin/python -m harness.report                       # every session under results/
 .venv/bin/python -m harness.report --out report.md
 ```
+
+Stage 5B's sampling pass reads each configuration's recommended defaults from its own artefact
+and reports them before running; `--show` stops there. The defaults differ between quantisations
+of one model, and `BON-M2` states none, so the pass refuses rather than guessing (§9 Stage 5B).
+Its records carry a `-sampled` driver label and never enter the main tables.
 
 Stage 2A/2B and `run` take `--driver {native,pi}`, defaulting to **`pi`** — the controlled
 comparison since 2026-08-31 (§4.1). Stage 0 and Stage 1 always use `native` regardless: Stage 0
@@ -137,9 +147,9 @@ Verified against a real model: the LM Studio client, both drivers, the metrics l
 and Stage 1 for all six configurations, Stage 2A and Stage 2B for LFM-M8 and LFM-G8 at 8K under
 both drivers, and reporting against the data those produced.
 
-Not yet run live: Stage 3, Stage 5B's compaction experiment, and the first `pi`-primary
-campaign. Not built: Stage 5B's recommended-default sampling pass, which is an operator action
-once the §4.2 detector fires — it now has.
+Not yet run live: Stage 3, Stage 5B's compaction experiment and Stage 5B's sampling pass — all
+three are built, with CLI entry points, and none has been run against a model. Two `pi`-primary
+campaigns are complete (`v6`, `v7`); see [`doc/results.md`](doc/results.md).
 
 The `v4` 8K agent data for LFM-M8 and LFM-G8 is due for re-collection. See
 [`doc/implementation-plan.md`](doc/implementation-plan.md), which is authoritative on remaining
@@ -167,6 +177,7 @@ harness/
   prompt.py               the fixed system prompt
   tasks/                  Suite W, Suite T and Stage 0 definitions and assertions
   assertions.py           shared assertion helpers
+  sampling.py             per-configuration recommended defaults, read from the artefact
   scoring.py              the 0-4 progress score
   runner.py               fixture preparation and grading
   types.py                Task, Ctx, RunOutcome

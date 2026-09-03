@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from . import environment, lmstudio, results
+from . import sampling as sampling_defaults
 from .admissibility import UNSUPPORTED, classify_declared
 from .client import LMStudioClient
 from .container import container_session
@@ -65,6 +66,7 @@ from .driver_native import NativeDriver
 from .driver_pi import PiDriver
 from .metrics import MemorySampler, SwapWindow, find_inference_pid, nonce_prefix, turn_metrics
 from .runner import Driver, run_task
+from .sampling import RecommendedSampling as SamplingOverride
 from .tasks import SUITE_T, SUITE_W
 from .tasks.smoke import STAGE0_TASKS
 from .types import Task
@@ -217,6 +219,7 @@ def _model_session(
     configs_dir: Path | None,
     verify_hash: bool,
     driver: str = "native",
+    sampling: SamplingOverride | None = None,
 ) -> Iterator[ModelSession]:
     """Load `config_id` once, capture the environment, and yield everything a
     stage loop needs. Raises `UnsupportedContextError` before any load is
@@ -254,13 +257,18 @@ def _model_session(
             verify_hash=verify_hash,
             session_id=session_id,
             executor=executor,
+            sampling=sampling.sampling if sampling else None,
         )
 
         existing = results.existing_keys(raw_path)
         if existing:
             _check_task_set_version_matches(raw_path)
 
-        client = LMStudioClient(model=STAGE_IDENTIFIER)
+        client = LMStudioClient(
+            model=STAGE_IDENTIFIER,
+            sampling=sampling.request_sampling if sampling else None,
+            extra_body=sampling.request_extra_body if sampling else None,
+        )
         overhead = client.measure_overhead()
         # After overhead calibration: MLX allocates lazily and is not yet
         # identifiable immediately after load (§5.2 defect note).
@@ -397,6 +405,7 @@ def run_stage(
     history_mode: str = "full",
     driver_label: str = "native",
     driver_factory: Callable[[ModelSession], Driver] | None = None,
+    sampling: SamplingOverride | None = None,
 ) -> StageOutcome:
     """Run `tasks` × `repetitions` against `config_id` at `context_length`,
     loading the model once (§9.0) and writing §10.1 records as they complete.
@@ -412,7 +421,7 @@ def run_stage(
         with _model_session(
             config_id, stage_name, context_length,
             results_dir=results_dir, configs_dir=configs_dir, verify_hash=verify_hash,
-            driver=driver_label,
+            driver=driver_label, sampling=sampling,
         ) as session:
             make_driver = driver_factory or _driver_factory("native", history_mode=history_mode)
             driver = make_driver(session)
@@ -590,23 +599,34 @@ def run_stage2b(
 def run_stage3(
     config_id: str,
     *,
+    driver: str = "pi",
     results_dir: Path = RESULTS_DIR,
     configs_dir: Path | None = None,
 ) -> dict[str, StageOutcome]:
     """Both suites at 16K (§9 Stage 3), for configurations already above the
     floor at 8K. Not part of `run_stages()` (see the module docstring) —
-    called independently once Stage 2A has proceeded."""
+    called independently once Stage 2A has proceeded.
+
+    Defaults to `pi`, the controlled comparison since `v5` (§4.1), and names
+    its raw file after the driver for the same reason Stage 2A/2B do: records
+    from different drivers are never pooled.
+
+    Both suites write to one file per driver. They are told apart by the
+    `suite` field, as they are at 8K.
+    """
     outcomes = {}
     for suite_name, tasks in (("W", SUITE_W), ("T", SUITE_T)):
         outcomes[suite_name] = run_stage(
             config_id,
             tasks,
-            stage_name="stage3",
+            stage_name="stage3" if driver == "native" else f"stage3-{driver}",
             suite=suite_name,
             context_length=16384,
             repetitions=AGENT_REPETITIONS,
             results_dir=results_dir,
             configs_dir=configs_dir,
+            driver_label=driver,
+            driver_factory=_driver_factory(driver),
         )
     return outcomes
 
@@ -761,6 +781,51 @@ def run_stage5b_compact(
     return outcomes
 
 
+def run_stage5b_sampling(
+    config_id: str,
+    context_length: int = 8192,
+    *,
+    driver: str = "native",
+    results_dir: Path = RESULTS_DIR,
+    configs_dir: Path | None = None,
+) -> tuple[SamplingOverride, dict[str, StageOutcome]]:
+    """Both suites at the configuration's own recommended sampling defaults
+    (§9 Stage 5B), reported separately from the controlled comparison.
+
+    Run when §4.2's degenerate-rate detector fires — `harness/report.py`'s
+    `is_degenerate_triggered` decides that, and this stays an operator action
+    rather than a pipeline step. The question it answers is whether repetition
+    loops and empty completions are a property of the model or an artefact of
+    greedy decoding, which the `native` arm's degenerate rate makes the
+    largest open question in the data.
+
+    The defaults come from the artefact, per configuration, and differ between
+    quantisations of one model (`harness/sampling.py`). Records carry the
+    driver label `<driver>-sampled`, so `report.py`'s `COMPARISON_DRIVERS`
+    never pools them into the controlled tables — the same mechanism that
+    keeps the compaction experiment out.
+    """
+    resolved = environment.load_resolved(config_id, configs_dir)
+    recommended = sampling_defaults.resolve(config_id, resolved["model_path"])
+
+    outcomes = {}
+    for suite_name, tasks in (("W", SUITE_W), ("T", SUITE_T)):
+        outcomes[suite_name] = run_stage(
+            config_id,
+            tasks,
+            stage_name=f"stage5b-sampling-{suite_name.lower()}",
+            suite=suite_name,
+            context_length=context_length,
+            repetitions=AGENT_REPETITIONS,
+            results_dir=results_dir,
+            configs_dir=configs_dir,
+            driver_label=f"{driver}-sampled",
+            driver_factory=_driver_factory(driver),
+            sampling=recommended,
+        )
+    return recommended, outcomes
+
+
 def _step_stage0(
     config_id: str, driver: str, results_dir: Path, configs_dir: Path | None
 ) -> Stage0Outcome:
@@ -896,6 +961,24 @@ def main(argv: list[str] | None = None) -> int:
     stage2b.add_argument("--context", type=int, default=8192)
     stage2b.add_argument("--driver", choices=("native", "pi"), default="pi")
 
+    stage3 = sub.add_parser(
+        "stage3", help="run §9 Stage 3: both suites at 16K, for Stage 2A survivors"
+    )
+    stage3.add_argument("config_id", help="§2 configuration ID, e.g. LFM-M8")
+    stage3.add_argument("--driver", choices=("native", "pi"), default="pi")
+
+    sampling_pass = sub.add_parser(
+        "stage5b-sampling",
+        help="run §9 Stage 5B's recommended-default sampling pass (§4.2 trigger)",
+    )
+    sampling_pass.add_argument("config_id", help="§2 configuration ID, e.g. LFM-G8")
+    sampling_pass.add_argument("--context", type=int, default=8192)
+    sampling_pass.add_argument("--driver", choices=("native", "pi"), default="native")
+    sampling_pass.add_argument(
+        "--show", action="store_true",
+        help="print the artefact's recommended defaults and exit, running nothing",
+    )
+
     stage5b = sub.add_parser(
         "stage5b-compact", help="run §9 Stage 5B's context-compaction experiment"
     )
@@ -960,6 +1043,50 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(outcome.detail)
         return 1
+
+    if args.command == "stage3":
+        outcomes = run_stage3(args.config_id, driver=args.driver)
+        exit_code = 0
+        for suite_name, outcome in outcomes.items():
+            print(f"suite {suite_name}: status={outcome.status}")
+            if outcome.status == "completed":
+                if outcome.skipped_min_context:
+                    print(f"  skipped (min_context): {', '.join(outcome.skipped_min_context)}")
+                print(f"  raw records: {outcome.raw_path}")
+            else:
+                print(f"  {outcome.detail}")
+                exit_code = 1
+        return exit_code
+
+    if args.command == "stage5b-sampling":
+        resolved = environment.load_resolved(args.config_id, None)
+        try:
+            recommended = sampling_defaults.resolve(args.config_id, resolved["model_path"])
+        except sampling_defaults.SamplingUnavailableError as error:
+            print(f"cannot run a sampling pass for {args.config_id}: {error}")
+            return 1
+
+        print(f"recommended defaults from {recommended.source}")
+        print(f"  stated by the artefact: {recommended.stated}")
+        for name, (controlled, recommended_value) in (
+            recommended.changed_from_controlled.items()
+        ):
+            print(f"  {name}: {controlled} (controlled) -> {recommended_value}")
+        if args.show:
+            return 0
+
+        _outcome_sampling, outcomes = run_stage5b_sampling(
+            args.config_id, context_length=args.context, driver=args.driver
+        )
+        exit_code = 0
+        for suite_name, outcome in outcomes.items():
+            print(f"suite {suite_name}: status={outcome.status}")
+            if outcome.status == "completed":
+                print(f"  raw records: {outcome.raw_path}")
+            else:
+                print(f"  {outcome.detail}")
+                exit_code = 1
+        return exit_code
 
     if args.command == "stage5b-compact":
         outcomes = run_stage5b_compact(args.config_id, context_length=args.context)

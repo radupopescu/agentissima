@@ -68,10 +68,16 @@ def _client_factory(*rounds):
     next fake client in `rounds`."""
     remaining = list(rounds)
 
-    def factory(model):
+    def factory(model, sampling=None, extra_body=None):
+        """`sampling`/`extra_body` are passed by every stage; only Stage 5B's
+        sampling pass sends anything but `None`. The fake records them so a
+        test can assert what the stage asked for."""
         if not remaining:
             raise AssertionError("LMStudioClient constructed more times than expected")
-        return remaining.pop(0)
+        client = remaining.pop(0)
+        client.requested_sampling = sampling
+        client.requested_extra_body = extra_body
+        return client
 
     return factory
 
@@ -583,3 +589,93 @@ def test_a_second_driver_does_not_overwrite_the_first_transcript(tmp_path):
 
     assert Path(native["transcript_path"]).is_file()
     assert len(list((tmp_path / "transcripts").glob("*.json"))) == 2
+
+
+# --- Stage 3 and Stage 5B's sampling pass stay out of the controlled tables ---
+#
+# report.py pools everything under raw/ and selects on `driver`, so a stage
+# that must not appear in the §10 tables needs both its own raw file and its
+# own driver label (§4.1).
+
+
+def test_stage3_writes_a_driver_specific_raw_file(tmp_path, monkeypatch):
+    _patch_common(monkeypatch)
+    captured = []
+    monkeypatch.setattr(
+        stages, "run_stage",
+        lambda *a, **k: captured.append(k) or stages.StageOutcome(status="completed", records=[]),
+    )
+
+    stages.run_stage3("FAKE", driver="pi", results_dir=tmp_path)
+    assert [k["stage_name"] for k in captured] == ["stage3-pi", "stage3-pi"]
+    assert {k["driver_label"] for k in captured} == {"pi"}
+    assert {k["context_length"] for k in captured} == {16384}
+    assert [k["suite"] for k in captured] == ["W", "T"]
+
+
+def test_stage3_defaults_to_the_controlled_driver(tmp_path, monkeypatch):
+    """`pi` since `v5` (§4.1). Stage 3 had no CLI and no driver argument until
+    it was needed, and defaulting to `native` would have quietly produced an
+    arm nothing else compares with."""
+    _patch_common(monkeypatch)
+    captured = []
+    monkeypatch.setattr(
+        stages, "run_stage",
+        lambda *a, **k: captured.append(k) or stages.StageOutcome(status="completed", records=[]),
+    )
+
+    stages.run_stage3("FAKE", results_dir=tmp_path)
+    assert {k["driver_label"] for k in captured} == {"pi"}
+
+
+def test_the_sampling_pass_labels_its_driver_as_sampled(tmp_path, monkeypatch):
+    _patch_common(monkeypatch)
+    from harness.sampling import RecommendedSampling
+
+    recommended = RecommendedSampling(
+        config_id="FAKE", source="fake.gguf", stated={"temperature": 0.1, "top_k": 50}
+    )
+    monkeypatch.setattr(stages.sampling_defaults, "resolve", lambda *a, **k: recommended)
+    captured = []
+    monkeypatch.setattr(
+        stages, "run_stage",
+        lambda *a, **k: captured.append(k) or stages.StageOutcome(status="completed", records=[]),
+    )
+
+    resolved, _outcomes = stages.run_stage5b_sampling("FAKE", results_dir=tmp_path)
+    assert {k["driver_label"] for k in captured} == {"native-sampled"}
+    assert [k["stage_name"] for k in captured] == [
+        "stage5b-sampling-w", "stage5b-sampling-t",
+    ]
+    assert all(k["sampling"] is recommended for k in captured)
+    assert resolved is recommended
+
+
+def test_a_sampled_driver_is_not_a_comparison_driver():
+    """The label is what keeps it out of the tables, so assert the mechanism
+    rather than trusting the name."""
+    from harness.report import COMPARISON_DRIVERS
+
+    assert "native-sampled" not in COMPARISON_DRIVERS
+    assert "pi-sampled" not in COMPARISON_DRIVERS
+
+
+def test_the_sampling_pass_sends_the_recommended_values_to_the_client(tmp_path, monkeypatch):
+    """End to end through `run_stage`: the fake client records what it was
+    constructed with, so this proves the override reaches the request rather
+    than stopping at the stage boundary."""
+    _patch_common(monkeypatch)
+    from harness.sampling import RecommendedSampling
+
+    recommended = RecommendedSampling(
+        config_id="FAKE", source="fake.gguf", stated={"temperature": 0.2, "top_k": 80}
+    )
+    monkeypatch.setattr(stages.sampling_defaults, "resolve", lambda *a, **k: recommended)
+    client = FakeClient(_turns_for([True] * 60))
+    monkeypatch.setattr(stages, "LMStudioClient", _client_factory(client, client))
+
+    stages.run_stage5b_sampling("FAKE", results_dir=tmp_path)
+    assert client.requested_sampling["temperature"] == 0.2
+    assert client.requested_extra_body["top_k"] == 80
+    # Pinned regardless of what the artefact said.
+    assert client.requested_sampling["seed"] == 1337

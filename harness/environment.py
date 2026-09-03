@@ -314,6 +314,7 @@ def capture(
     verify_hash: bool = True,
     session_id: str | None = None,
     executor: Any = None,
+    sampling: dict | None = None,
 ) -> SessionEnvironment:
     """Assert §3.1 preconditions and write results/<session>/environment.json.
 
@@ -376,7 +377,10 @@ def capture(
         "quant_sha256": resolved["quant_sha256"],
         "quant_sha256_verified": hash_verified,
         "context_length": context_length,
-        "sampling": {**DEFAULT_SAMPLING, **DEFAULT_EXTRA_BODY},
+        # §4.2's controlled set, unless a stage is deliberately running
+        # something else — Stage 5B's sampling pass. Recorded as it was sent,
+        # so a session can never imply sampling it did not use.
+        "sampling": sampling or {**DEFAULT_SAMPLING, **DEFAULT_EXTRA_BODY},
         "harness_git_sha": harness_git_sha(),
         "driver": driver,
         "driver_version": _DRIVER_VERSIONS.get(driver),
