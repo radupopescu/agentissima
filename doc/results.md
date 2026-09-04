@@ -18,14 +18,19 @@ This document interprets. The authorities it draws on are elsewhere and are not 
 |---|---|---|---|
 | `v6` | 2026-09-02 | Six configurations, Stage 0/1/2A/2B under `pi`; `native` arm for LFM-G8 and LFM-GQ4 | 7.13 h |
 | `v7` | 2026-09-03 | The same scope, after five changes to the instrument | 6.86 h |
+| `v8` | 2026-09-04 | LFM-G8 and LFM-GQ4 only: baselines plus **Stage 3** and **Stage 5B's sampling pass** | 6.4 h |
 
-Both at 8192 context for the agent stages, both on one machine, both with 534 records. `v7` is
-the current data. `v6` is archived under `results/*/archive/` and is not comparable cell-by-cell
-(§4.1, §11) — but because nothing in the `v7` bump touches inference, the two campaigns together
-work as a replication, which §7 below uses.
+`v6` and `v7` are the full six-configuration campaigns and carry the headline numbers below.
+`v8` is narrower by design — two configurations, chosen because Suite W cannot separate the four
+(§3) and because these two already have `native` arms — and exists to run the two experiments in
+§7a. Each experiment's baseline was re-collected under `v8` rather than compared against `v7`,
+since §11 makes the two versions non-comparable.
 
-Not yet run: Stage 3 (both suites at 16K), Stage 5B's compaction experiment, and Stage 5B's
-recommended-default sampling pass.
+Earlier campaigns are archived under `results/*/archive/`. Because nothing in the `v7` or `v8`
+bumps touches inference, the campaigns together work as replications, which §7 uses.
+
+Not yet run: Stage 5B's compaction experiment. Stage 4 (32K/64K) is specified to run only where
+Stage 3 shows failures attributable to context limits, and §7a shows it does not.
 
 ## 2. Headline results (`v7`)
 
@@ -215,6 +220,53 @@ them and progress recorded for every one.
 
 **Suite W's movement is noise**, per §3.
 
+## 7a. The two experiments, and what they ruled out
+
+Both were run on 2026-09-04 against LFM-G8 and LFM-GQ4, each against a baseline collected the
+same night. Both returned negative results, and both are more useful for it: they close the two
+largest open questions this document previously listed.
+
+### Recommended-default sampling does not explain `native`'s degeneracy
+
+§4.2 promises a second pass at the model's recommended sampling defaults when degenerate
+behaviour exceeds 20% of runs. It had fired in three consecutive campaigns, always and only on
+`native`. Each configuration ran at its own artefact's defaults — LFM-G8 at `temperature 0.1,
+top_k 50`, LFM-GQ4 at `0.2, 80`.
+
+| | Suite W greedy → sampled | Suite T greedy → sampled |
+|---|---|---|
+| LFM-G8 | 9/30 → 9/30, degenerate 15 → 18 | 19/30 → 22/30 |
+| LFM-GQ4 | 12/30 → 12/30, degenerate 15 → 12 | 25/30 → 27/30 |
+| Pooled | | 65/120 → 70/120, degenerate 38% → 34% |
+
+Not one Suite W task changed outcome, at either configuration. Degeneracy rose for one and fell
+for the other. The greedy baseline reproduced `v7` exactly on that suite — same scores, same
+termination counts — so the instrument was sensitive enough to have shown a real effect.
+
+**Consequence for §5.** The scaffolding conclusion stands without qualification: `native`'s
+termination failures are a property of these models in a bare agent loop, not an artefact of
+greedy decoding.
+
+### 16K does not help the tasks that overflow 8K
+
+The premise was measured, not assumed: 10% of `v7` runs accumulated more history than the 8K
+window holds, and those runs were the failing ones. At 16K only 2 of 60 runs per configuration
+still overflow, so the relief was real.
+
+| | 8K | 16K |
+|---|---|---|
+| Pooled, both suites | 100/120 | 96/120 |
+| W02, W03, W06, T03 | 10/24 | 8/24 |
+
+The four context-pressed tasks did not improve. The overflowing history was a symptom of long
+flailing runs, not a cause of failure — those tasks fail on the mechanisms §4 describes, and
+doubling the context changes none of them. **Stage 4 (32K/64K) is therefore not warranted**, since
+§9 conditions it on Stage 3 showing failures attributable to context limits.
+
+An incidental correction: agent-stage wall clock barely moved (median 24 s at 8K, 25 s at 16K).
+Stage 1's doubled TTFT is measured on a single long prompt and does not transfer to agent runs,
+whose turns are short and numerous.
+
 ## 8. Limitations and threats to validity
 
 1. **Resolution.** 30 runs per cell is 10 tasks × 3 repetitions, and repetitions of one task are
@@ -248,11 +300,15 @@ them and progress recorded for every one.
   the FX-direction errors survive into the code the model writes, so a prompt would convert a
   wrong mental sum into a correctly-executed wrong program. Stage 5B is where this belongs, and
   §11 requires it to be a separate arm rather than an edit.
-- **Why does `native` degenerate on half its Suite W runs?** The §4.2 detector has fired in
-  three consecutive campaigns — at `v7`, LFM-G8 39% and LFM-GQ4 29% as the report computes it
-  across their native records — and Stage 5B's sampling pass remains unrun. That is the largest
-  single unexplained effect in the data.
-- **Does the Stage 5A conclusion hold at 16K?** Stage 3 has never been run.
+- **Why does `native` degenerate on half its Suite W runs?** Still open, but narrower: the
+  sampling pass has now ruled out greedy decoding (§7a). Neither LFM artefact states a repeat
+  penalty, so nothing in either arm suppressed repetition, and `loop_detected` held at exactly 3
+  runs in all four cells regardless of temperature. A penalty is the obvious next thing to try,
+  but it is an operator's choice of settings rather than an artefact's recommendation, which is a
+  different experiment from the one §9 authorises.
+- **Does the Stage 5A conclusion hold at 16K?** Stage 3 has now run under `pi` only, so the
+  driver comparison at 16K is still open. It is a cheaper question than it was: agent-stage
+  timing barely changes between the tiers.
 
 ## 10. Regenerating anything here
 

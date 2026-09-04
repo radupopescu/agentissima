@@ -65,16 +65,18 @@ Ten defects that only a real model exposed, now fixed and covered by tests:
 
 ### Not built
 
-Nothing. Stage 3, Stage 5B's compaction experiment and Stage 5B's sampling pass are all built
-and unit-tested, each with a CLI entry point; none has been run against a model, because each is
-hours long. `run_stages(config_id, stage_names, driver=...)` runs any ordered subset of Stage
+Only Stage 5B's compaction experiment remains unrun. Stage 3 and the sampling pass ran on
+2026-09-04 for LFM-G8 and LFM-GQ4; both returned negative results (`findings.md`), and Stage 4
+is consequently not warranted — §9 conditions it on Stage 3 showing failures attributable to
+context limits, and it did not. `run_stages(config_id, stage_names, driver=...)` runs any ordered subset of Stage
 0/1/2A/2B, under either driver, in one command (§9.3); Stage 3 and both Stage 5B experiments are
 deliberately outside that registry and are invoked on their own.
 
-The §4.2 degenerate-rate detector has fired in three consecutive campaigns. At `v7` it is
-LFM-G8 `native` at 39% and LFM-GQ4 `native` at 29%, both over the 20% threshold, so Stage 5B's
-recommended-default sampling pass remains warranted for the `native` arm — an operator action,
-not an automatic pipeline step. It has never fired for `pi`, whose degenerate rate is 6%.
+The §4.2 degenerate-rate detector has fired in four consecutive campaigns, always and only on
+`native`; `pi` sits at 6%. Stage 5B's sampling pass ran on 2026-09-04 in response and **did not
+fix it** — no Suite W task changed outcome at either configuration's own recommended defaults,
+and the pooled degenerate rate moved 38% → 34%, still above the threshold. The detector will keep
+firing; that is now a known state rather than an outstanding action.
 
 ### ~~Open defects after the `v7` campaign~~ — both fixed, `task_set_version` bumped to `v8`
 
@@ -446,7 +448,7 @@ tools and never enters `harness/sandbox.py`. It reaches 20/20, so no §7 asserti
 `native`'s transcript structure and Stage 5A's cross-check is sound. Covered by
 `tests/test_gates.py` as well as the CLI gate.
 
-### M8 — Stage 5B — built: compaction *and* the sampling pass; unit-tested, neither run live
+### M8 — Stage 5B — the sampling pass has run live (2026-09-04); compaction still has not
 
 §9 Stage 5B has three parts, only one of which is a concrete, buildable deliverable — see
 `benchmark.md` §9 Stage 5B for the reasoning recorded against each:

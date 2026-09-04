@@ -43,6 +43,11 @@ from .results import read_records
 
 RESULTS_DIR = Path("results")
 
+# The context the controlled comparison runs at (§9 Stage 2A/2B). Stage 3's
+# 16384 records live in their own sessions and are never mixed into the
+# headline table.
+AGENT_CONTEXT = 8192
+
 # §4.2: Stage 5B's recommended-default sampling pass is triggered when
 # degenerate behaviour exceeds this rate. None of the four §4.8 outcomes
 # below are themselves "finish_reason anomalies" in the raw API sense —
@@ -166,16 +171,30 @@ class SuiteSummary:
 
 
 def suite_summary(
-    records: list[dict], config_id: str, suite: str, *, driver: str = "native"
+    records: list[dict],
+    config_id: str,
+    suite: str,
+    *,
+    driver: str = "native",
+    context_length: int = AGENT_CONTEXT,
 ) -> SuiteSummary:
     """§10.2's headline metric: successful tasks per hour of wall clock. The
     denominator is every run in the suite's stage, not only the passing
     ones — a configuration that fails fast should not be penalised relative
     to one that fails slowly by the same count; both cost real wall clock.
-    Scoped to one `driver` (§4.1) — never pooled across drivers."""
+
+    Scoped to one `driver` (§4.1) and to one `context_length`. The context
+    scope is not decoration: Stage 2A and Stage 3 run the same suite at 8192
+    and 16384, and grouping by configuration and driver alone pooled them into
+    a single `45/60` cell the first time Stage 3 data existed — two context
+    tiers averaged into a number belonging to neither. Stage 3 is a separate
+    question and is reported separately (§9 Stage 3)."""
     scoped = [
         r for r in records
-        if r["config_id"] == config_id and r["suite"] == suite and r["driver"] == driver
+        if r["config_id"] == config_id
+        and r["suite"] == suite
+        and r["driver"] == driver
+        and r["context_length"] == context_length
     ]
     total_runs = len(scoped)
     passed_runs = sum(1 for r in scoped if r["passed"])

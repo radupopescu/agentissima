@@ -147,9 +147,9 @@ Verified against a real model: the LM Studio client, both drivers, the metrics l
 and Stage 1 for all six configurations, Stage 2A and Stage 2B for LFM-M8 and LFM-G8 at 8K under
 both drivers, and reporting against the data those produced.
 
-Not yet run live: Stage 3, Stage 5B's compaction experiment and Stage 5B's sampling pass — all
-three are built, with CLI entry points, and none has been run against a model. Two `pi`-primary
-campaigns are complete (`v6`, `v7`); see [`doc/results.md`](doc/results.md).
+Three campaigns are complete: `v6` and `v7` across all six configurations, and `v8` for LFM-G8
+and LFM-GQ4 with Stage 3 and Stage 5B's sampling pass. Only Stage 5B's compaction experiment has
+never run against a model. See [`doc/results.md`](doc/results.md).
 
 The `v4` 8K agent data for LFM-M8 and LFM-G8 is due for re-collection. See
 [`doc/implementation-plan.md`](doc/implementation-plan.md), which is authoritative on remaining

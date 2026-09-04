@@ -1,0 +1,150 @@
+[
+  {
+    "role": "system",
+    "content": "You are an agent working inside a directory. You can inspect and change files only\nthrough the tools provided to you.\n\nRules:\n- Use the tools to gather information. Do not guess the contents of a file.\n- All paths are relative to the working directory root.\n- When the task is complete, reply with a final message containing the answer and\n  call no tool in that message.\n- Be concise."
+  },
+  {
+    "role": "user",
+    "content": "The test tests/test_posting.py::test_split_posting_balances fails. Fix the source so that the whole test suite passes."
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "715501700",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{\"path\":\"tests/test_posting.py\"}"
+        }
+      },
+      {
+        "id": "288941183",
+        "type": "function",
+        "function": {
+          "name": "search_files",
+          "arguments": "{\"pattern\":\"test_split_posting_balances\",\"path\":\"tests\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "715501700",
+    "content": "from decimal import Decimal\n\nimport pytest\n\nfrom ledger.posting import post_split, split_amount\nfrom ledger.validation import ValidationError\n\n\ndef test_split_two_way_exact():\n    assert split_amount(Decimal(\"100.00\"), [1, 1]) == [Decimal(\"50.00\"), Decimal(\"50.00\")]\n\n\ndef test_split_posting_balances():\n    shares = split_amount(Decimal(\"100.00\"), [1, 1, 1])\n    assert sum(shares) == Decimal(\"100.00\")\n\n\ndef test_split_rejects_empty_weights():\n    with pytest.raises(ValidationError):\n        split_amount(Decimal(\"10.00\"), [])\n\n\ndef test_post_split_length_mismatch():\n    with pytest.raises(ValidationError):\n        post_split([\"a\"], Decimal(\"10.00\"), [1, 1])\n"
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "288941183",
+    "content": "tests/test_posting.py:13:def test_split_posting_balances():"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "570876597",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{\"path\":\"ledger/posting.py\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "570876597",
+    "content": "error: no such file: ledger/posting.py"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "338784458",
+        "type": "function",
+        "function": {
+          "name": "find_files",
+          "arguments": "{\"path\":\".\",\"pattern\":\"**/posting.py\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "338784458",
+    "content": "error: unknown tool: find_files"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "958628130",
+        "type": "function",
+        "function": {
+          "name": "list_files",
+          "arguments": "{\"path\":\".\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "958628130",
+    "content": "AGENTS.md\nREADME.md\ndocs/\npyproject.toml\nsrc/\ntests/"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "911248995",
+        "type": "function",
+        "function": {
+          "name": "list_files",
+          "arguments": "{\"path\":\"src/\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "911248995",
+    "content": "ledger/"
+  },
+  {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+      {
+        "id": "179701783",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{\"path\":\"src/ledger/posting.py\"}"
+        }
+      },
+      {
+        "id": "569737432",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{\"path\":\"src/ledger/validation.py\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "179701783",
+    "content": "\"\"\"Posting entries and splitting amounts across accounts.\"\"\"\n\nfrom decimal import Decimal\n\nfrom .currency import quantise\nfrom .entries import Entry, make_entry\nfrom .validation import ValidationError\n\n\ndef split_amount(total: Decimal, weights: list[int]) -> list[Decimal]:\n    \"\"\"Split ``total`` across ``weights``.\n\n    The returned shares must sum exactly to ``total``. Any rounding remainder\n    is added to the first share.\n    \"\"\"\n    if not weights:\n        raise ValidationError(\"weights must not be empty\")\n    if any(w <= 0 for w in weights):\n        raise ValidationError(\"weights must be positive\")\n\n    total_weight = sum(weights)\n    shares = [round(float(total) * w / total_weight, 2) for w in weights]\n    return [Decimal(str(s)) for s in shares]\n\n\ndef post_split(account_names: list[str], amount: Decimal, weights: list[int]) -> list[Entry]:\n    \"\"\"Post ``amount`` across ``account_names`` in proportion to ``weights``.\"\"\"\n    if len(account_names) != len(weights):\n        raise ValidationError(\"account_names and weights must be the same length\")\n    shares = split_amount(quantise(amount), weights)\n    return [make_entry(name, share) for name, share in zip(account_names, shares)]\n"
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "569737432",
+    "content": "\"\"\"Validation errors shared across the package.\"\"\"\n\n\nclass ValidationError(ValueError):\n    \"\"\"Raised when input does not satisfy a ledger invariant.\"\"\"\n\n\ndef describe(field: str, value: object) -> str:\n    \"\"\"Return a human-readable description of a rejected field value.\"\"\"\n    return f\"{field}={value!r}\"\n"
+  }
+]

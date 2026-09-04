@@ -16,6 +16,146 @@ drawn from.
 
 ---
 
+## 2026-09-04 — recommended-default sampling does not fix `native`'s degeneracy
+
+**The experiment.** Stage 5B's sampling pass, `v8`, LFM-G8 and LFM-GQ4, both suites, `native`.
+Each configuration ran at *its own* artefact's defaults — LFM-G8 at `temperature 0.1, top_k 50`,
+LFM-GQ4 at `0.2, 80` — against the greedy §4.2 arm collected the same night. Only sampling
+varies. This is what §4.2 promises when the degenerate-rate detector fires, and it had fired in
+three consecutive campaigns.
+
+**The baseline is unusually clean.** The greedy arm reproduced `v7` *exactly* on Suite W for both
+configurations: 9/30 and 12/30, 15/30 degenerate each, and identical termination counts
+(12 `empty_answer`, 3 `loop_detected`, and for LFM-G8 3 `server_error`). §4.2's near-determinism
+caveat is real but small here, so a change under recommended sampling would have been visible.
+
+**Nothing changed where it matters.**
+
+| | Suite W greedy → sampled | Suite T greedy → sampled |
+|---|---|---|
+| LFM-G8 | 9/30 → 9/30, degenerate 15 → **18** | 19/30 → 22/30, degenerate 11 → 8 |
+| LFM-GQ4 | 12/30 → 12/30, degenerate 15 → **12** | 25/30 → 27/30, degenerate 5 → 3 |
+| Pooled | | 65/120 → 70/120, degenerate 46 → 41 (38% → 34%) |
+
+**Not one Suite W task changed outcome**, in either configuration, at two quite different points
+in the sampling space. Degeneracy rose for one configuration and fell for the other — the
+signature of noise, not of a fix. The pooled rate stays far above §4.2's 20% threshold.
+
+Suite T improved by +3 and +2, entirely from T06 and T02, which were failing on termination. But
+Suite T's greedy degeneracy was already low (11 and 5), so this is the easy half moving rather
+than the problem being solved.
+
+**What this settles.** `native`'s termination failures are a property of these models in a bare
+agent loop, not an artefact of greedy decoding. The 2026-09-02 finding — that `pi`'s advantage is
+termination — stands, and does not need the qualification that greedy sampling might explain it.
+
+**A mechanism for anyone tempted to try again:** neither LFM artefact states a repeat penalty, so
+both sampled arms kept `repeat_penalty 1.0`, and `loop_detected` sat at exactly 3 runs in all
+four cells regardless of temperature. Nothing in either arm suppresses repetition. Testing a
+penalty would be an operator's choice of settings rather than the artefact's recommendation,
+which is a different experiment from the one §9 authorises here.
+
+**Evidence:** `results/{LFM-G8,LFM-GQ4}-8192/raw/stage5b-sampling-{w,t}.jsonl` against
+`stage2{a,b}.jsonl`, all `v8`.
+
+---
+
+## 2026-09-04 — 16K does not help the tasks that overflow 8K
+
+**The experiment.** Stage 3, `v8`, LFM-G8 and LFM-GQ4, both suites at 16384, against the 8K `pi`
+arm collected the same night. The premise was specific and measured: 10% of `v7` runs accumulated
+more history than the 8K window holds, up to an estimated 42k tokens, and the runs that did it
+were the ones that fail — W02, W03, W06, T03.
+
+**The window relief is real.** At 16K only 2 of 60 runs per configuration still exceed their
+window, against 10% at 8K, and the median per-turn prompt is about 2.9k. So this is not a case of
+16K being too small to test the hypothesis.
+
+**The scores did not follow.**
+
+| | 8K | 16K |
+|---|---|---|
+| LFM-G8 Suite W / T | 23/30, 28/30 | 22/30, 26/30 |
+| LFM-GQ4 Suite W / T | 20/30, 29/30 | 21/30, 27/30 |
+| Pooled | 100/120 | 96/120 |
+| **The four context-pressed tasks** | **10/24** | **8/24** |
+
+W02, W03, W06 and T03 moved by a run in each direction and ended slightly lower. Nothing suggests
+the extra room was worth anything, and §9's "larger context is not assumed to be better" is
+vindicated on measurement rather than assumption.
+
+**What this settles.** The overflowing history was a *symptom* of long flailing runs, not a cause
+of the failures. Those tasks fail on computed aggregation, FX conversion direction and
+instruction-following — the mechanisms the transcripts have shown since `v6` — and doubling the
+context changes none of them. Stage 4 (32K/64K) is specified to run "only where Stage 3 showed
+failures attributable to context limits" (§9); it did not, so Stage 4 is not warranted.
+
+**An incidental correction worth keeping.** Stage 3 was budgeted at 4½ hours on the assumption
+that Stage 1's doubled TTFT would dominate. Median run wall clock was 24 s at 8K and 25 s at 16K:
+agent turns are short and numerous, so a single long prompt's prefill cost does not transfer to
+agent-stage timing. Both configurations took 100 minutes.
+
+**Evidence:** `results/{LFM-G8,LFM-GQ4}-16384/raw/stage3-pi.jsonl` against the 8K `stage2{a,b}-pi`
+files, all `v8`.
+
+---
+
+## 2026-09-04 — the report pooled two context tiers into one cell
+
+**What happened.** Generating the `v8` report gave LFM-G8 `pi` a Suite W score of **45/60**. There
+is no such cell: it is Stage 2A's 23/30 at 8192 added to Stage 3's 22/30 at 16384. `suite_summary`
+scoped records by `config_id`, `suite` and `driver`, and grouped across everything else.
+
+**Why it never surfaced before.** Until `v8` no campaign had agent-stage records at two context
+tiers. Stage 1 runs at both, but contributes no suite score, so the grouping was correct for every
+report generated up to that point and wrong the moment Stage 3 existed.
+
+**Resolution.** `suite_summary` now scopes to a `context_length`, defaulting to the 8192 the
+controlled comparison runs at, and Stage 3's tier is reported by asking for it. Both directions
+are asserted in `tests/test_report.py`. The `v8` table now reads 23/30 and 20/30, as the raw data
+says.
+
+This is the same family as the 2026-08-29 defect where everything under `raw/` was pooled
+unconditionally: a grouping that is correct until a new kind of record appears, and silently wrong
+afterwards. Neither was caught by a test, because in both cases the test data predated the record
+type that broke it.
+
+**Evidence:** `doc/report-v8.md` before and after, against
+`results/LFM-G8-{8192,16384}/archive/*-v8.jsonl`.
+
+---
+
+## 2026-09-04 — the work-directory seal fires, and the model still does not recover
+
+**What happened.** The `v8` seal (§4.6) was verified by regression tests but had never been
+exercised by a live model. It fired once in 240 `pi` runs, in
+`results/LFM-GQ4-8192/transcripts/LFM-GQ4-pi-W-W03-r1.json`.
+
+The sequence is worth reading. The model read the correct path
+(`<workdir>/root/data/summary.csv`), then drifted one directory up: wrote to `<workdir>/data/`,
+then to `<workdir>/summary.csv`, then tried the same through `bash` — which returned
+`Permission denied`, exactly as designed. It then wrote an agent log to `notes/agent-log.md`,
+obeying the fixture's adversarial `AGENTS.md`, and gave up. The run failed.
+
+**So the fix does what it was specified to do and no more.** It converts a silent false success
+into a visible error; it does not convert the run into a pass. The `v7` motivation was that the
+model "gets no error and cannot recover" — the first half is now fixed, and the second half turns
+out not to follow from it.
+
+**Also worth recording:** W07 went 2/3 → 3/3 for both configurations at `v8`, which looks like the
+seal working and is not. Checked directly: those runs wrote to the correct path first time and no
+denial appears in any of them. The improvement is variance.
+
+**Care needed reading run ids across context tiers.** `run_id` carries the driver but not the
+context length, so a Stage 2A run and its Stage 3 counterpart share an id. They live in different
+session directories (`<config>-8192` and `<config>-16384`), so nothing is overwritten, but a query
+that globs `results/*/raw/*.jsonl` and matches on `run_id` alone will pair them up. Records carry
+`context_length` and `session_id`; use them.
+
+**Evidence:** the `v8` `pi` transcripts under `results/*/transcripts/`.
+
+---
+
 ## 2026-09-03 — the artefacts disagree about their own recommended sampling
 
 **What happened.** Preparing Stage 5B's sampling pass meant answering what "the model's

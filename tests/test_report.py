@@ -56,9 +56,12 @@ def test_passed_none_records_are_left_alone():
 
 def test_suite_summary_counts_passes_and_computes_rate():
     records = [
-        {"config_id": "C", "suite": "W", "driver": "native", "passed": True, "wall_clock_s": 60.0},
-        {"config_id": "C", "suite": "W", "driver": "native", "passed": False, "wall_clock_s": 60.0},
-        {"config_id": "C", "suite": "T", "driver": "native", "passed": True, "wall_clock_s": 999.0},
+        {"config_id": "C", "suite": "W", "driver": "native", "passed": True,
+         "wall_clock_s": 60.0, "context_length": 8192},
+        {"config_id": "C", "suite": "W", "driver": "native", "passed": False,
+         "wall_clock_s": 60.0, "context_length": 8192},
+        {"config_id": "C", "suite": "T", "driver": "native", "passed": True,
+         "wall_clock_s": 999.0, "context_length": 8192},
     ]
     summary = report.suite_summary(records, "C", "W")
     assert summary.total_runs == 2
@@ -69,11 +72,13 @@ def test_suite_summary_counts_passes_and_computes_rate():
 
 def test_suite_summary_a_slow_failure_scores_no_better_than_a_fast_one():
     fast_fail = report.suite_summary(
-        [{"config_id": "C", "suite": "W", "driver": "native", "passed": False, "wall_clock_s": 10.0}],
+        [{"config_id": "C", "suite": "W", "driver": "native", "passed": False,
+          "wall_clock_s": 10.0, "context_length": 8192}],
         "C", "W",
     )
     slow_fail = report.suite_summary(
-        [{"config_id": "C", "suite": "W", "driver": "native", "passed": False, "wall_clock_s": 500.0}],
+        [{"config_id": "C", "suite": "W", "driver": "native", "passed": False,
+          "wall_clock_s": 500.0, "context_length": 8192}],
         "C", "W",
     )
     assert fast_fail.successful_tasks_per_hour == 0.0
@@ -89,8 +94,13 @@ def test_suite_summary_with_no_runs_is_zero_not_an_error():
 def test_suite_summary_never_pools_a_different_driver():
     """§4.1: records from different drivers are never pooled."""
     records = [
-        {"config_id": "C", "suite": "W", "driver": "native", "passed": True, "wall_clock_s": 60.0},
-        {"config_id": "C", "suite": "W", "driver": "pi", "passed": True, "wall_clock_s": 60.0},
+        # `context_length` is part of the §10.1 schema, so a real record always
+        # carries it; `suite_summary` scopes on it and does not tolerate its
+        # absence.
+        {"config_id": "C", "suite": "W", "driver": "native", "passed": True,
+         "wall_clock_s": 60.0, "context_length": 8192},
+        {"config_id": "C", "suite": "W", "driver": "pi", "passed": True,
+         "wall_clock_s": 60.0, "context_length": 8192},
     ]
     native = report.suite_summary(records, "C", "W", driver="native")
     pi = report.suite_summary(records, "C", "W", driver="pi")
@@ -229,3 +239,35 @@ def test_verdict_scoped_to_driver_pi_data_does_not_leak_into_native_verdict():
     records += _stage2a_records("C", passed=True, progress=4, driver="pi")
     assert report._verdict("C", records, driver="native") == "passed Stage 0 only"
     assert report._verdict("C", records, driver="pi") == "passed Stage 2A gate"
+
+
+# --- Stage 3's 16K records never enter the 8K headline table -----------------
+#
+# suite_summary grouped by configuration and driver alone, so the first time
+# Stage 3 data existed it pooled 23/30 at 8192 with 22/30 at 16384 into a
+# single 45/60 cell -- a number belonging to neither tier.
+
+
+def _agent_record(context_length, passed, **kw):
+    base = dict(
+        config_id="LFM-G8", suite="W", task_id="W01", repetition=1, driver="pi",
+        passed=passed, wall_clock_s=10.0, termination_reason="final_answer",
+        context_length=context_length,
+    )
+    base.update(kw)
+    return base
+
+
+def test_the_headline_table_reports_one_context_tier():
+    records = [_agent_record(8192, True), _agent_record(16384, False)]
+    summary = report.suite_summary(records, "LFM-G8", "W", driver="pi")
+    assert (summary.passed_runs, summary.total_runs) == (1, 1)
+
+
+def test_stage3_records_are_reachable_by_asking_for_them():
+    """Scoping is not hiding: the 16K tier is reported by naming it."""
+    records = [_agent_record(8192, True), _agent_record(16384, False)]
+    summary = report.suite_summary(
+        records, "LFM-G8", "W", driver="pi", context_length=16384
+    )
+    assert (summary.passed_runs, summary.total_runs) == (0, 1)

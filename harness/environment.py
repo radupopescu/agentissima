@@ -44,7 +44,9 @@ SERVER_ENDPOINT = "http://localhost:1234/v1/models"
 _DRIVER_VERSIONS = {
     "native": NATIVE_DRIVER_VERSION,
     "native-compact": NATIVE_DRIVER_VERSION,
+    "native-sampled": NATIVE_DRIVER_VERSION,
     "pi": PI_DRIVER_VERSION,
+    "pi-sampled": PI_DRIVER_VERSION,
 }
 
 
